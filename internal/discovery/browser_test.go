@@ -14,7 +14,9 @@ func (r *recorder) emit(ev Event) { r.events = append(r.events, ev) }
 
 func newTestBrowser(now *time.Time) (*browser, *recorder) {
 	r := &recorder{}
-	return &browser{self: "me", emit: r.emit, now: func() time.Time { return *now }, peers: map[string]*seenPeer{}}, r
+	b := newBrowser("me", r.emit)
+	b.now = func() time.Time { return *now }
+	return b, r
 }
 
 func peer(id string, addrs ...string) transport.Peer {

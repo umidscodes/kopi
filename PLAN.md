@@ -66,14 +66,23 @@ touch is an interface, so the whole sync behavior is testable in CI with fakes.
 - Status: done. Discovery uses `brutella/dnssd` (browse with add/remove callbacks;
   sends goodbye packets on clean shutdown). Each send gets a 1-byte ack so the sender
   can tell "passphrase mismatch" from "unreachable".
-- Real-mDNS test is opt-in (`KOPI_MDNS_TEST=1`) and still to run on real hardware in M3.
-  Watch for: Windows' own mDNS service also using UDP 5353, and machines with several
-  network interfaces (Hyper-V, Tailscale) announcing unreachable addresses.
+- Real-mDNS test is opt-in (`KOPI_MDNS_TEST=1`).
 
 ### M3 — Real clipboards
 - Windows implementation + sensitive detection. **Owner: Claude**
 - macOS implementation (cgo) + sensitive detection. **Owner: Claude**
 - Manual check on each OS: copy/paste, password manager copy is skipped.
+- Status: done, verified on the real PC (Windows 11) and Mac (macOS 27.2).
+  - Both clipboards poll a change counter (Windows sequence number, macOS changeCount).
+  - Discovery: dnssd's browser queries only once, so we re-query every 5 s and expire
+    silent peers after 15 s. On macOS, dnssd's own socket never receives multicast from
+    other hosts (mDNSResponder owns 5353), so macOS uses native Bonjour (`dns_sd.h`).
+    PC ↔ Mac discovery verified both ways with `tools/mdnsprobe`.
+  - AVG on the PC sandboxes new unsigned executables and its firewall blocks inbound
+    traffic; `bin/` needs an AVG exception and the app an AVG firewall allow rule.
+- Carry into M4: the Mac app must be an `.app` bundle with `NSLocalNetworkUsageDescription`
+  and `NSBonjourServices = _kopi._tcp` in Info.plist so macOS can ask for Local Network
+  permission; first-run docs must cover AVG / Windows Firewall allow rules.
 
 ### M4 — Tray app and wiring
 - `cmd/kopi` wires everything; tray menu per spec. **Owner: Claude, review: you**
