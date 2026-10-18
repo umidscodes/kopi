@@ -15,6 +15,7 @@ import (
 	"fyne.io/systray"
 
 	"github.com/umidscodes/kopi/internal/app"
+	"github.com/umidscodes/kopi/internal/autostart"
 	"github.com/umidscodes/kopi/internal/clip"
 	"github.com/umidscodes/kopi/internal/config"
 	"github.com/umidscodes/kopi/internal/icon"
@@ -53,6 +54,7 @@ type kopiApp struct {
 	mPause     *systray.MenuItem
 	mSensitive *systray.MenuItem
 	mPass      *systray.MenuItem
+	mLogin     *systray.MenuItem
 	mQuit      *systray.MenuItem
 }
 
@@ -107,6 +109,7 @@ func (a *kopiApp) onReady() {
 	a.mSensitive = systray.AddMenuItemCheckbox("Include sensitive content",
 		"Also sync text that password managers mark as private", false)
 	a.mPass = systray.AddMenuItem("Set passphrase…", "The same passphrase must be set on every device")
+	a.mLogin = systray.AddMenuItemCheckbox("Start at login", "Start Kopi automatically when you log in", a.loginEnabled())
 	systray.AddSeparator()
 	a.mQuit = systray.AddMenuItem("Quit Kopi", "")
 
@@ -336,11 +339,48 @@ func (a *kopiApp) clicks() {
 					a.setPassphraseFromTray()
 				}()
 			}
+		case <-a.mLogin.ClickedCh:
+			a.toggleLogin()
 		case <-a.mQuit.ClickedCh:
 			systray.Quit()
 			return
 		}
 	}
+}
+
+// loginEnabled reports whether this copy of Kopi starts at login.
+func (a *kopiApp) loginEnabled() bool {
+	exe, err := autostart.Executable()
+	if err != nil {
+		return false
+	}
+	on, err := autostart.Enabled(exe)
+	if err != nil {
+		log.Printf("start at login: %v", err)
+	}
+	return on
+}
+
+func (a *kopiApp) toggleLogin() {
+	exe, err := autostart.Executable()
+	if err == nil {
+		if a.mLogin.Checked() {
+			err = autostart.Disable()
+		} else {
+			err = autostart.Enable(exe)
+		}
+	}
+	if err != nil {
+		log.Printf("start at login: %v", err)
+		showMessage("Couldn't change Start at login: " + err.Error())
+	}
+	// Show what is actually configured, whatever happened.
+	if a.loginEnabled() {
+		a.mLogin.Check()
+	} else {
+		a.mLogin.Uncheck()
+	}
+	log.Printf("start_at_login=%v", a.mLogin.Checked())
 }
 
 func (a *kopiApp) setPassphraseFromTray() {

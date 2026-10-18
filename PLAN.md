@@ -109,10 +109,18 @@ touch is an interface, so the whole sync behavior is testable in CI with fakes.
   - `tools/kopiping host:port` checks that a node is reachable through firewalls.
 
 ### M5 — Ship it (to yourself)
-- Release workflow: on tag `v*`, build Windows + macOS binaries and attach to a GitHub release. **Owner: Qwen**
-- Start-at-login scripts: launchd plist (Mac), Startup shortcut / Task Scheduler (Windows). **Owner: Qwen**
-- README: setup on each OS, Gatekeeper bypass, firewall prompt. **Owner: Qwen**
-- Manual run of the "Known risks" table on your PC and Mac. **Owner: you**
+- Release workflow: on tag `v*`, build `kopi.exe` (Windows) and `Kopi.app` (macOS), zip
+  them, publish `SHA256SUMS`, attach all to a GitHub Release. **Owner: Qwen, review: Claude**
+- Start at login: a **"Start at login" tray checkbox** (decided over scripts: easy to undo).
+  Windows: `HKCU\…\CurrentVersion\Run` value; macOS: a LaunchAgent plist in
+  `~/Library/LaunchAgents`. **Owner: Claude**
+- Install locations (decided): `%LOCALAPPDATA%\Programs\Kopi\kopi.exe` and
+  `~/Applications/Kopi.app`, installed from the GitHub Release, not local builds. The AVG
+  exception and firewall rule get re-added for the new Windows path.
+- README: setup on each OS, passphrase, AVG/firewall, Tailscale, Gatekeeper/SmartScreen
+  bypass, troubleshooting with `kopiping`, building from source. **Owner: Qwen**
+- `TESTPLAN.md`: manual release checklist from SPEC.md + Known risks. **Owner: Claude**;
+  run against the released build and signed off by **you** before tagging `v0.1.0`.
 
 ## Resolved questions
 
