@@ -63,6 +63,7 @@ type Engine struct {
 	guard *proto.ReplayGuard
 
 	mu               gosync.Mutex
+	key              *proto.Key // nil: no passphrase (SEC-4); changeable via SetKey
 	paused           bool
 	includeSensitive bool
 	// Hash of the last clip applied from a peer. Local changes with this hash are the
@@ -88,7 +89,29 @@ func New(o Options) *Engine {
 	}
 	g := proto.NewReplayGuard(o.ReplayWindow)
 	g.Now = o.Now
-	return &Engine{opts: o, guard: g, includeSensitive: o.IncludeSensitive}
+	return &Engine{opts: o, guard: g, key: o.Key, includeSensitive: o.IncludeSensitive}
+}
+
+// SetKey switches to a new passphrase key (nil disables syncing). Takes effect for the
+// next clip in either direction.
+func (e *Engine) SetKey(k *proto.Key) {
+	e.mu.Lock()
+	e.key = k
+	e.mu.Unlock()
+}
+
+// HasKey reports whether a passphrase is set.
+func (e *Engine) HasKey() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.key != nil
+}
+
+// Paused reports whether syncing is paused.
+func (e *Engine) Paused() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.paused
 }
 
 // Run handles local clipboard changes until ctx is done.
@@ -137,7 +160,7 @@ func (e *Engine) HandleLocal(it clip.Item) {
 	case e.paused:
 		e.mu.Unlock()
 		return
-	case e.opts.Key == nil:
+	case e.key == nil:
 		e.mu.Unlock()
 		e.emit(Event{Kind: EventNoPassphrase})
 		return
@@ -158,9 +181,10 @@ func (e *Engine) HandleLocal(it clip.Item) {
 	}
 	m := proto.Message{ID: proto.NewID(), From: e.opts.DeviceID, SentAt: at, Text: text}
 	e.lastAt, e.lastFrom, e.hasLast = m.SentAt, m.From, true
+	key := *e.key
 	e.mu.Unlock()
 
-	sealed, err := proto.Seal(*e.opts.Key, m)
+	sealed, err := proto.Seal(key, m)
 	if err != nil {
 		return
 	}
@@ -171,10 +195,13 @@ func (e *Engine) HandleLocal(it clip.Item) {
 // Receive processes a sealed message from a peer. It returns proto.ErrDecrypt when
 // the peer uses a different passphrase, so the caller can mark that peer (SEC-1).
 func (e *Engine) Receive(sealed []byte) error {
-	if e.opts.Key == nil {
+	e.mu.Lock()
+	kp := e.key
+	e.mu.Unlock()
+	if kp == nil {
 		return ErrNoPassphrase
 	}
-	m, err := proto.Open(*e.opts.Key, sealed)
+	m, err := proto.Open(*kp, sealed)
 	if err != nil {
 		return err
 	}

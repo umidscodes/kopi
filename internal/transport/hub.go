@@ -149,6 +149,17 @@ func (h *Hub) MarkMismatchFrom(ip netip.Addr) {
 	}
 }
 
+// ResetStates forgets what we learned about every peer (e.g. after the passphrase
+// changed, old "mismatch" verdicts no longer hold).
+func (h *Hub) ResetStates() {
+	h.mu.Lock()
+	for _, p := range h.peers {
+		p.State = StateUnknown
+	}
+	h.mu.Unlock()
+	h.changed()
+}
+
 // Broadcast sends sealed to every peer in the background. Slow or dead peers never
 // block the caller.
 func (h *Hub) Broadcast(sealed []byte) {

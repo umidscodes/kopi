@@ -87,6 +87,17 @@ touch is an interface, so the whole sync behavior is testable in CI with fakes.
 ### M4 — Tray app and wiring
 - `cmd/kopi` wires everything; tray menu per spec. **Owner: Claude, review: you**
 - `kopi passphrase` CLI command to set the passphrase (see open question 1).
+- Design as built:
+  - Passphrase entry: native masked dialogs (macOS `osascript`, Windows credential
+    prompt), asked twice, min 8 characters. A terminal prompt is used when `kopi
+    passphrase` runs in a terminal (macOS). Windows tray apps can't use the terminal
+    because shells don't wait for GUI-subsystem programs.
+  - The running app polls its config file every 2 s, so `kopi passphrase` applies live.
+  - Config is saved on first run so the device ID persists across restarts.
+  - Tray icon is drawn in code (`internal/icon`, written by Qwen): template PNG for the
+    macOS menu bar, ICO for Windows.
+  - `scripts/build-windows.ps1` → `bin\kopi.exe` (no console window);
+    `scripts/build-mac-app.sh` → `bin/Kopi.app` with Bonjour + Local Network keys.
 
 ### M5 — Ship it (to yourself)
 - Release workflow: on tag `v*`, build Windows + macOS binaries and attach to a GitHub release. **Owner: Qwen**
@@ -94,9 +105,7 @@ touch is an interface, so the whole sync behavior is testable in CI with fakes.
 - README: setup on each OS, Gatekeeper bypass, firewall prompt. **Owner: Qwen**
 - Manual run of the "Known risks" table on your PC and Mac. **Owner: you**
 
-## Open questions
+## Resolved questions
 
-1. **Setting the passphrase.** Tray menus can't show a text box without pulling in a GUI
-   toolkit. Proposal: `kopi passphrase` in a terminal (hidden input), and the tray item
-   "Set passphrase…" opens a terminal running it. OK?
-2. **GitHub username** for the module path (currently `github.com/umidscodes/kopi`).
+1. **Setting the passphrase:** native dialogs instead of opening a terminal (see M4).
+2. **GitHub username:** `umidscodes`; module path `github.com/umidscodes/kopi`.
