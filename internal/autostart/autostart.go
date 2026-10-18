@@ -23,6 +23,12 @@ func Executable() (string, error) {
 	return filepath.EvalSymlinks(exe)
 }
 
+// Translocated reports whether macOS is running exe from App Translocation's
+// temporary read-only copy (a quarantined download that was never cleared).
+func Translocated(exe string) bool {
+	return strings.Contains(filepath.ToSlash(exe), "/AppTranslocation/")
+}
+
 // bundlePath returns the .app bundle containing exe, or "" if exe isn't in one.
 // ".../Kopi.app/Contents/MacOS/kopi" → ".../Kopi.app"
 func bundlePath(exe string) string {

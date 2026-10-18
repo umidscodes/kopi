@@ -58,15 +58,29 @@ type Hub struct {
 	SendTimeout time.Duration
 	// OnChange, if set, is called after the peer list or a peer's state changes.
 	OnChange func()
+	// RetryDelays are the pauses between attempts when a peer is unreachable, e.g. a
+	// laptop whose Wi-Fi is still reconnecting after waking from sleep. A newer clip
+	// cancels the retries of an older one; it will be sent anyway.
+	RetryDelays []time.Duration
 
 	mu    gosync.Mutex
 	peers map[string]*PeerStatus
+	gen   uint64 // bumped by every Broadcast
 	wg    gosync.WaitGroup
+	stop  chan struct{}
+	once  gosync.Once
 }
 
+// DefaultRetryDelays add up to about 30 s of retrying.
+var DefaultRetryDelays = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}
+
 func NewHub() *Hub {
-	return &Hub{Send: Send, SendTimeout: IOTimeout, peers: map[string]*PeerStatus{}}
+	return &Hub{Send: Send, SendTimeout: IOTimeout, RetryDelays: DefaultRetryDelays,
+		peers: map[string]*PeerStatus{}, stop: make(chan struct{})}
 }
+
+// Stop cancels pending retries (at shutdown).
+func (h *Hub) Stop() { h.once.Do(func() { close(h.stop) }) }
 
 // Upsert adds a peer or merges new addresses into a known one.
 func (h *Hub) Upsert(p Peer) {
@@ -163,12 +177,47 @@ func (h *Hub) ResetStates() {
 // Broadcast sends sealed to every peer in the background. Slow or dead peers never
 // block the caller.
 func (h *Hub) Broadcast(sealed []byte) {
+	h.mu.Lock()
+	h.gen++
+	gen := h.gen
+	h.mu.Unlock()
 	for _, p := range h.Peers() {
 		h.wg.Add(1)
 		go func(p PeerStatus) {
 			defer h.wg.Done()
-			h.setState(p.ID, h.deliver(p, sealed))
+			h.deliverWithRetry(p, sealed, gen)
 		}(p)
+	}
+}
+
+// deliverWithRetry sends to one peer, retrying network failures (T17: copy right
+// after the other device wakes up) until it works, a newer clip supersedes this one,
+// the peer is removed, or the retries run out.
+func (h *Hub) deliverWithRetry(p PeerStatus, sealed []byte, gen uint64) {
+	s := h.deliver(p, sealed)
+	h.setState(p.ID, s)
+	for _, d := range h.RetryDelays {
+		if s != StateUnreachable {
+			return
+		}
+		select {
+		case <-h.stop:
+			return
+		case <-time.After(d):
+		}
+		h.mu.Lock()
+		cur, ok := h.peers[p.ID]
+		superseded := h.gen != gen
+		if ok {
+			p = *cur // pick up addresses learned meanwhile (e.g. Tailscale came back)
+			p.Addrs = slices.Clone(cur.Addrs)
+		}
+		h.mu.Unlock()
+		if !ok || superseded {
+			return
+		}
+		s = h.deliver(p, sealed)
+		h.setState(p.ID, s)
 	}
 }
 

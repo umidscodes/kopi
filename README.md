@@ -72,6 +72,9 @@ xattr -dr com.apple.quarantine ~/Applications/Kopi.app
 
 (Right-click → Open no longer bypasses Gatekeeper since macOS 15.)
 
+Prefer the `xattr` command: after "Open Anyway" alone, macOS keeps running the app
+from a hidden temporary copy ("App Translocation"), and Kopi's tray will say so.
+
 macOS then asks whether Kopi may find devices on your local network — click **Allow**.
 If you missed the prompt: System Settings → Privacy & Security → Local Network →
 turn **Kopi** on.
@@ -87,7 +90,8 @@ turn **Kopi** on.
    - **Devices**: your peers, each marked `connected`, `found`,
      `passphrase mismatch` or `unreachable`,
    - **Pause sync** — stop sending and receiving,
-   - **Include sensitive content** — off by default,
+   - **Send passwords copied on this device** — off by default; it's the *copying*
+     device's setting that decides,
    - **Set passphrase…**, **Start at login** — off by default,
    - **Quit Kopi**.
 
@@ -112,7 +116,9 @@ networks. Nothing to configure in Kopi; install Tailscale and sign in on both de
 | "passphrase mismatch" | The two devices have different passphrases; set them the same. |
 | "unreachable" | A device is announced but its port is blocked. From the other machine: `go run ./tools/kopiping <ip>:47800` — OK with a name means it's reachable. |
 | Passphrase dialog doesn't appear | Only one dialog at a time; check other windows. Or run `kopi passphrase` in a terminal. |
-| A clip didn't arrive | Sync paused? Was it marked sensitive (skipped by default)? Over 15 MB? Is the other device's Kopi running? |
+| A clip didn't arrive | Sync paused? Was it marked sensitive (skipped unless the *copying* device allows it)? Over 15 MB? Is the other device's Kopi running? Right after waking from sleep Kopi retries for ~30 s. |
+| Settings don't stick (Windows) | Antivirus sandboxing (e.g. AVG CyberCapture / Sandbox) lets Kopi run but throws away what it saves. Exclude `kopi.exe` from the sandbox and add it to the exceptions. |
+| Tray says "running from a temporary copy" (macOS) | Run `xattr -dr com.apple.quarantine ~/Applications/Kopi.app` and reopen Kopi. |
 
 Logs: `%APPDATA%\kopi\kopi.log` (Windows), `~/Library/Application Support/kopi/kopi.log`
 (macOS). Settings live next to the log, in `kopi.yml`. Logs never contain clip text or

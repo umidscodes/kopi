@@ -40,9 +40,12 @@ type kopiApp struct {
 	node     *app.Node
 	started  time.Time
 	startErr error
-	writeErr error  // can't write the log/config folder (e.g. blocked by antivirus)
-	flash    string // short-lived status override ("Clip too large…")
-	flashTil time.Time
+	writeErr error // can't write the log/config folder (e.g. blocked by antivirus)
+	// translocated: macOS runs a quarantined download from a temporary copy; start at
+	// login and permissions get confused until the quarantine flag is cleared.
+	translocated bool
+	flash        string // short-lived status override ("Clip too large…")
+	flashTil     time.Time
 
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -67,6 +70,10 @@ func runApp() {
 	}
 	logErr := setupLog(filepath.Dir(path))
 	a := &kopiApp{cfgPath: path, dirty: make(chan struct{}, 1), writeErr: logErr}
+	if exe, err := autostart.Executable(); err == nil && autostart.Translocated(exe) {
+		a.translocated = true
+		log.Print("running from App Translocation (quarantined download)")
+	}
 	a.ctx, a.cancel = context.WithCancel(context.Background())
 	systray.Run(a.onReady, a.onExit)
 }
@@ -116,8 +123,10 @@ func (a *kopiApp) onReady() {
 	}
 	systray.AddSeparator()
 	a.mPause = systray.AddMenuItemCheckbox("Pause sync", "Stop sending and receiving clips", false)
-	a.mSensitive = systray.AddMenuItemCheckbox("Include sensitive content",
-		"Also sync text that password managers mark as private", false)
+	// The sending device's setting decides whether a sensitive copy leaves it, so the
+	// label says "from this device" (rc1 testing: users toggled it on the receiver).
+	a.mSensitive = systray.AddMenuItemCheckbox("Send passwords copied on this device",
+		"Also sync text that password managers mark as private, when copied here", false)
 	a.mPass = systray.AddMenuItem("Set passphrase…", "The same passphrase must be set on every device")
 	a.mLogin = systray.AddMenuItemCheckbox("Start at login", "Start Kopi automatically when you log in", a.loginEnabled())
 	systray.AddSeparator()
@@ -283,6 +292,8 @@ func (a *kopiApp) redraw() {
 		status = flash
 	case len(peers) == 0 && time.Since(started) > noPeersHintAfter:
 		status = "No devices found — check firewall, or install Tailscale on both"
+	case a.translocated:
+		status = "Syncing, but running from a temporary copy — clear quarantine (see README)"
 	}
 	a.mStatus.SetTitle("Kopi — " + status)
 	systray.SetTooltip("Kopi — " + status)

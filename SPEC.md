@@ -158,6 +158,10 @@ Scenario: [SENS-2] Sensitive clips can be opted in
   Then B receives it
 ```
 
+The setting belongs to the device where the text is copied: a sensitive copy leaves a
+device only if *that* device has "Send passwords copied on this device" on. Receivers
+apply whatever arrives. (rc1 testing showed this must be explicit in the UI.)
+
 Detection: Windows clipboard formats `ExcludeClipboardContentFromMonitorProcessing` and
 `CanIncludeInClipboardHistory` = 0; macOS pasteboard types `org.nspasteboard.ConcealedType`
 and `org.nspasteboard.TransientType`.

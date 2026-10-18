@@ -16,7 +16,8 @@ with a note, and file a GitHub issue for every Fail (title starts with the case 
 | S2 | Verify checksums (`Get-FileHash -Algorithm SHA256 <zip>` / `shasum -a 256 <zip>`) | Match `SHA256SUMS` |
 | S3 | Windows: quit any running Kopi, unzip `kopi.exe` to `%LOCALAPPDATA%\Programs\Kopi\`, run it | SmartScreen warning → More info → Run anyway; tray icon appears |
 | S4 | Windows: allow `…\Programs\Kopi\kopi.exe` in the firewall (Windows / AVG), private networks | Rule exists |
-| S5 | macOS: quit Kopi, unzip, replace `~/Applications/Kopi.app`, open it | Gatekeeper blocks it; Done → Privacy & Security → Open Anyway (as in README) works; menu-bar icon appears |
+| S5 | macOS: quit Kopi, unzip, replace `~/Applications/Kopi.app`, then in Terminal `xattr -dr com.apple.quarantine ~/Applications/Kopi.app`, open it | Opens; menu-bar icon appears; status does **not** mention "temporary copy" |
+| S5b | Windows: check AVG isn't sandboxing Kopi: tick Pause sync, quit, reopen | Pause sync is still unticked? Fine (not saved by design). Then toggle "Start at login" on, quit, reopen: it must still be ticked. If not, AVG is throwing away Kopi's writes — add `kopi.exe` to AVG's exceptions **and** exclude it from the Sandbox / CyberCapture |
 | S6 | macOS: allow Local Network when asked | Kopi on in Privacy & Security → Local Network |
 | S7 | Both: tray → Set passphrase…, same passphrase on both | Status "Kopi — Syncing"; each lists the other as *connected* after the first clip |
 
@@ -29,9 +30,10 @@ with a note, and file a GitHub issue for every Fail (title starts with the case 
 | T03 | SYNC-7 | Synced pair | Copy `héllo 🌍 你好` plus a second line, paste on the other side | Characters identical; line break preserved |
 | T04 | SYNC-5 | Synced pair | Copy "x" on PC, then "y", then "x" again | Mac ends with "x" |
 | T05 | SYNC-4 | Synced pair | Copy once on PC; watch both logs for 10 s | One "sent" on PC, one "applied" on Mac, no echo back |
-| T06 | SENS-1 | Include sensitive **off** | Copy a password from your password manager on PC | Mac clipboard unchanged; PC tray flashes "Skipped a sensitive clip" |
-| T07 | SENS-2 | Include sensitive **on** | Repeat T06 | Password arrives on Mac. Turn the option off again afterwards |
-| T08 | SIZE-1 | Synced pair | Copy > 15 MB of text (e.g. a large log file) on PC | Not sent; tray flashes "Clip too large (max 15 MB)" |
+| T06 | SENS-1 | On the **PC** (the copying device), "Send passwords copied on this device" **unticked** — check the tick mark first | Copy a password from your password manager on PC; open the PC tray within 3 s | Mac clipboard unchanged; PC status shows "Skipped a sensitive clip". Note which password manager you used: not every app marks copies as private |
+| T07 | SENS-2 | On the **PC**, the option **ticked** | Repeat T06 | Password arrives on Mac. Untick it again afterwards |
+| T08 | SIZE-1 | Synced pair | On PC, in PowerShell: `Set-Clipboard -Value ('x' * 15728641)` (15 MiB + 1 byte) | Not sent (Mac clipboard unchanged); PC status shows "Clip too large (max 15 MB)" |
+| T08b | SIZE-3 | Synced pair | On PC: `Set-Clipboard -Value ('x' * 15728640)` (exactly 15 MiB) | Arrives on Mac. Don't paste it into a browser — 15 MB in one text field can hang the browser itself |
 | T09 | TRAY-2 | Synced pair | Tick Pause sync on PC; copy on PC; copy on Mac | Nothing crosses either way; status "Paused". Untick → syncing resumes |
 | T10 | SEC-1 | Synced pair | Set a *different* passphrase on Mac; copy on PC | Mac clipboard unchanged; both list the other as "passphrase mismatch". Restore the passphrase → syncing resumes |
 | T11 | SEC-4 | Remove the passphrase line from one device's `kopi.yml` | Wait 5 s; copy on it | Status "Set a passphrase to start syncing"; nothing sent |
@@ -40,7 +42,7 @@ with a note, and file a GitHub issue for every Fail (title starts with the case 
 | T14 | DISC-3 | After T13 | Reopen Kopi on Mac; copy on PC | Mac listed again; clip arrives, no user action |
 | T15 | DISC-4 | Tailscale on both | Turn Wi-Fi off on the Mac and use a phone hotspot (different network); copy on PC | Clip still arrives (via tailnet) |
 | T16 | DISC-7 | Only one device running | Wait 35 s; open the tray | Status suggests checking firewall / Tailscale |
-| T17 | — | Synced pair | Put the Mac to sleep for 2 min, wake it; copy on PC | Clip arrives within ~20 s of waking |
+| T17 | — | Synced pair | Close the Mac's lid for 2 min; open it and **immediately** copy on PC | Clip arrives within ~30 s of waking, without copying again |
 | T18 | — | Start at login **on** (both) | Log out and back in (or reboot) | Kopi is running; tray shows it; syncing works |
 | T19 | — | After T18 | Untick Start at login; log out/in | Kopi does not start |
 | T20 | — | Passphrase dialog | Click Set passphrase… twice quickly (Windows) | Exactly one dialog, in front of other windows |

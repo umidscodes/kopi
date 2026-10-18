@@ -12,7 +12,8 @@ var agentDir = filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")
 
 func agentPath() string { return filepath.Join(agentDir, Label+".plist") }
 
-// Enabled reports whether a LaunchAgent exists that starts *this* copy of Kopi.
+// Enabled reports whether a LaunchAgent exists that starts this Kopi (for an app
+// bundle: any installed Kopi.app, since the agent opens it by bundle ID).
 func Enabled(exe string) (bool, error) {
 	b, err := os.ReadFile(agentPath())
 	if errors.Is(err, os.ErrNotExist) {
@@ -41,13 +42,15 @@ func Disable() error {
 	return err
 }
 
-// plist builds the LaunchAgent. Inside an app bundle it runs `open -a Kopi.app`, so
-// macOS launches the app as itself (its Local Network permission stays attached);
-// a bare binary (development build) is run directly.
+// plist builds the LaunchAgent. Inside an app bundle it runs `open -b <bundle ID>`:
+// macOS launches the app as itself (its Local Network permission stays attached),
+// and finds it wherever it's installed. Using the path would break when the app
+// runs from App Translocation's temporary copy (quarantined downloads), a path that
+// is gone after a reboot. A bare binary (development build) is run directly.
 func plist(exe string) []byte {
 	args := []string{exe}
-	if app := bundlePath(exe); app != "" {
-		args = []string{"/usr/bin/open", "-a", app}
+	if bundlePath(exe) != "" {
+		args = []string{"/usr/bin/open", "-b", Label}
 	}
 	var b bytes.Buffer
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>

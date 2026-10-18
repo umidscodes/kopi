@@ -21,11 +21,17 @@ func TestDarwinEnableDisableRoundTrip(t *testing.T) {
 	if on, err := Enabled(exe); err != nil || !on {
 		t.Fatalf("after Enable: on=%v err=%v", on, err)
 	}
-	if on, _ := Enabled("/somewhere/else/Kopi.app/Contents/MacOS/kopi"); on {
-		t.Fatal("an agent for another copy must not count as enabled")
+	// The agent opens Kopi by bundle ID, so it is valid for any installed copy,
+	// including one macOS runs from App Translocation.
+	translocated := "/private/var/folders/nh/x/T/AppTranslocation/FC6C/d/Kopi.app/Contents/MacOS/kopi"
+	if on, _ := Enabled(translocated); !on {
+		t.Fatal("an agent written by the installed app must count for a translocated run too")
 	}
 	b, _ := os.ReadFile(agentPath())
-	for _, want := range []string{"<string>/usr/bin/open</string>", "<string>/Users/u/Applications/Kopi.app</string>", "<key>RunAtLoad</key><true/>", Label} {
+	if strings.Contains(string(b), "AppTranslocation") || strings.Contains(string(b), "/Users/u/Applications") {
+		t.Fatalf("plist must not contain an install path:\n%s", b)
+	}
+	for _, want := range []string{"<string>/usr/bin/open</string>", "<string>-b</string>", "<string>" + Label + "</string>", "<key>RunAtLoad</key><true/>"} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("plist missing %q:\n%s", want, b)
 		}

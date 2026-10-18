@@ -88,6 +88,7 @@ func Start(ctx context.Context, o Options) (*Node, error) {
 		for i := 0; i < 3; i++ {
 			<-errc
 		}
+		hub.Stop() // don't keep retrying sends after shutdown
 		hub.Wait()
 		close(n.done)
 	}()
