@@ -340,6 +340,34 @@ func TestSEC4_NoPassphraseNoSync(t *testing.T) {
 	}
 }
 
+func TestSEC4_SettingPassphraseLaterStartsSync(t *testing.T) {
+	n := newNet()
+	a := n.add(t, "a", withKey(nil)).run(t)
+	b := n.add(t, "b").run(t)
+	a.clip.Copy("before", false)
+	eventually(t, time.Second, "A refuses without passphrase", func() bool { return a.hasEvent(EventNoPassphrase) })
+	if a.engine.HasKey() {
+		t.Fatal("HasKey true without a passphrase")
+	}
+	a.engine.SetKey(&keyAlpha)
+	a.clip.Copy("after", false)
+	eventually(t, time.Second, "B receives once A has the passphrase", hasText(b, "after"))
+}
+
+func TestSEC1_ChangingPassphraseCutsOffOldPeers(t *testing.T) {
+	n := newNet()
+	a := n.add(t, "a").run(t)
+	b := n.add(t, "b").run(t)
+	a.clip.Copy("same key", false)
+	eventually(t, time.Second, "B has it", hasText(b, "same key"))
+	a.engine.SetKey(&keyBravo)
+	a.clip.Copy("new key", false)
+	eventually(t, time.Second, "B rejects", func() bool { return len(b.errors()) > 0 })
+	if b.clip.Text() != "same key" || !errors.Is(b.errors()[0], proto.ErrDecrypt) {
+		t.Fatalf("B clipboard=%q errors=%v", b.clip.Text(), b.errors())
+	}
+}
+
 // --- Feature: Sensitive content ---
 
 func TestSENS1_SensitiveSkippedByDefault(t *testing.T) {

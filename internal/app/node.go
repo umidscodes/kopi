@@ -61,9 +61,14 @@ func Start(ctx context.Context, o Options) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	srv.SetIdentity(transport.Identity{ID: o.DeviceID, Name: o.DeviceName, Version: 1})
 	disc := o.Discovery
 	if disc == nil {
-		disc = discovery.MDNS{Self: transport.Peer{ID: o.DeviceID, Name: o.DeviceName}, Port: srv.Port()}
+		self := transport.Peer{ID: o.DeviceID, Name: o.DeviceName}
+		disc = discovery.Multi{
+			discovery.MDNS{Self: self, Port: srv.Port()},
+			discovery.Tailscale{Self: self, Port: srv.Port()},
+		}
 	}
 
 	n := &Node{Engine: eng, Hub: hub, server: srv, done: make(chan struct{})}

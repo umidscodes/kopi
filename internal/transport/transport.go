@@ -6,10 +6,15 @@
 package transport
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/umidscodes/kopi/internal/proto"
@@ -39,9 +44,32 @@ type Handler func(remote netip.Addr, sealed []byte) error
 
 // Server accepts messages from peers.
 type Server struct {
-	ln     net.Listener
-	handle Handler
-	sem    chan struct{}
+	ln       net.Listener
+	handle   Handler
+	sem      chan struct{}
+	identity atomic.Pointer[[]byte] // JSON answer to a hello; nil: don't answer
+}
+
+// Identity is what a node reveals to anyone who asks: the same fields mDNS publishes.
+type Identity struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Version int    `json:"v"`
+}
+
+// helloMagic is a request frame asking "who are you?". Sealed messages always start
+// with proto's version byte (1), so the two can never be confused.
+var helloMagic = []byte("KOPI?")
+
+const (
+	ackHello     byte = 3 // followed by one frame of Identity JSON
+	maxHelloSize      = 1024
+)
+
+// SetIdentity makes the server answer hello requests (used by tailnet discovery).
+func (s *Server) SetIdentity(id Identity) {
+	b, _ := json.Marshal(id)
+	s.identity.Store(&b)
 }
 
 // Listen opens a TCP listener on addr (e.g. ":47800", or "127.0.0.1:0" in tests).
@@ -103,6 +131,13 @@ func (s *Server) serveConn(conn net.Conn) {
 		}
 		return
 	}
+	if bytes.Equal(sealed, helloMagic) {
+		if id := s.identity.Load(); id != nil {
+			conn.Write([]byte{ackHello})
+			proto.WriteFrame(conn, *id)
+		}
+		return
+	}
 	ack := ackOK
 	if err := s.handle(remote, sealed); err != nil {
 		ack = ackRejected
@@ -111,6 +146,49 @@ func (s *Server) serveConn(conn net.Conn) {
 		}
 	}
 	conn.Write([]byte{ack})
+}
+
+// Hello asks the node at addr who it is. It fails if nothing answers or the answer
+// isn't a Kopi identity, so it doubles as a "is Kopi running there?" check.
+func Hello(ctx context.Context, addr string) (Identity, error) {
+	d := net.Dialer{Timeout: DialTimeout}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return Identity{}, err
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(DialTimeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	conn.SetDeadline(deadline)
+	if err := proto.WriteFrame(conn, helloMagic); err != nil {
+		return Identity{}, err
+	}
+	var ack [1]byte
+	if _, err := io.ReadFull(conn, ack[:]); err != nil {
+		return Identity{}, err
+	}
+	if ack[0] != ackHello {
+		return Identity{}, errors.New("kopi: not a hello answer")
+	}
+	var hdr [4]byte
+	if _, err := io.ReadFull(conn, hdr[:]); err != nil {
+		return Identity{}, err
+	}
+	n := binary.BigEndian.Uint32(hdr[:])
+	if n > maxHelloSize {
+		return Identity{}, proto.ErrTooLarge
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(conn, body); err != nil {
+		return Identity{}, err
+	}
+	var id Identity
+	if err := json.Unmarshal(body, &id); err != nil || id.ID == "" {
+		return Identity{}, errors.New("kopi: bad hello answer")
+	}
+	return id, nil
 }
 
 // Send delivers one sealed message to addr ("host:port") and waits for the ack.

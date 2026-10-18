@@ -259,6 +259,59 @@ func TestServeReturnsNilAfterContextCancel(t *testing.T) {
 	}
 }
 
+func TestHelloReturnsIdentityWithoutCallingHandler(t *testing.T) {
+	var r recorder
+	s, err := transport.Listen("127.0.0.1:0", r.handler(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetIdentity(transport.Identity{ID: "abc123", Name: "MacBook", Version: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Serve(ctx)
+
+	id, err := transport.Hello(context.Background(), s.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.ID != "abc123" || id.Name != "MacBook" || id.Version != 1 {
+		t.Fatalf("identity = %+v", id)
+	}
+	if len(r.payloads()) != 0 {
+		t.Fatal("hello reached the message handler")
+	}
+}
+
+func TestHelloWithoutIdentityFails(t *testing.T) {
+	var r recorder
+	addr := startServer(t, r.handler(nil)) // no SetIdentity
+	if _, err := transport.Hello(context.Background(), addr); err == nil {
+		t.Fatal("hello succeeded against a server with no identity")
+	}
+}
+
+func TestHelloToNonKopiFails(t *testing.T) {
+	// A plain TCP server that answers garbage, like some other service on that port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			c.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n"))
+			c.Close()
+		}
+	}()
+	if _, err := transport.Hello(context.Background(), ln.Addr().String()); err == nil {
+		t.Fatal("hello accepted a non-Kopi answer")
+	}
+	if _, err := transport.Hello(context.Background(), "127.0.0.1:1"); err == nil {
+		t.Fatal("hello to a closed port succeeded")
+	}
+}
+
 func TestHubBroadcastTracksOKAndMismatch(t *testing.T) {
 	const good, bad = "127.0.0.1:47801", "127.0.0.1:47802"
 	var (
