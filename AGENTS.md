@@ -36,6 +36,11 @@ review catches something new.
   on both machines before the milestone counts as done.
 - When a test fails, verify the test harness first: a garbled prompt and two probes
   that never overlapped both looked like product bugs.
+- Real networks are hostile: other apps share UDP 5353 and antivirus firewalls drop
+  traffic silently. Don't rely on a single discovery path, and make the UI say what to
+  check when nothing is found.
+- Test helpers that feed events from several goroutines must wait for each step to be
+  processed before the next, or the test races its own setup.
 - Code in `_darwin.go` / `_darwin.c` can't be compiled on Windows. Push it to a branch
   and let the macOS CI job (or the Mac over SSH) build it before merging.
 

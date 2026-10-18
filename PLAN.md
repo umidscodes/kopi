@@ -98,6 +98,15 @@ touch is an interface, so the whole sync behavior is testable in CI with fakes.
     macOS menu bar, ICO for Windows.
   - `scripts/build-windows.ps1` → `bin\kopi.exe` (no console window);
     `scripts/build-mac-app.sh` → `bin/Kopi.app` with Bonjour + Local Network keys.
+- Status: done. Clips sync PC ↔ Mac both ways in under 2 s, verified by an automated
+  round trip and by hand.
+  - First real run found no devices: the PC received almost no mDNS traffic because
+    Chrome, Steam and Opera also listen on UDP 5353, and AVG's firewall was dropping
+    inbound packets. Added tailnet discovery (DISC-4..7): `tailscale status --json`
+    plus a TCP hello, merged with mDNS so a device is listed once.
+  - Windows put the passphrase dialog behind other windows (focus-stealing
+    prevention); fixed with `AllowSetForegroundWindow` and one dialog at a time.
+  - `tools/kopiping host:port` checks that a node is reachable through firewalls.
 
 ### M5 — Ship it (to yourself)
 - Release workflow: on tag `v*`, build Windows + macOS binaries and attach to a GitHub release. **Owner: Qwen**
