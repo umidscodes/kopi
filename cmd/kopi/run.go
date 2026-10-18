@@ -40,6 +40,7 @@ type kopiApp struct {
 	node     *app.Node
 	started  time.Time
 	startErr error
+	writeErr error  // can't write the log/config folder (e.g. blocked by antivirus)
 	flash    string // short-lived status override ("Clip too large…")
 	flashTil time.Time
 
@@ -64,26 +65,35 @@ func runApp() {
 		showMessage("Kopi can't find your config folder: " + err.Error())
 		os.Exit(1)
 	}
-	setupLog(filepath.Dir(path))
-	a := &kopiApp{cfgPath: path, dirty: make(chan struct{}, 1)}
+	logErr := setupLog(filepath.Dir(path))
+	a := &kopiApp{cfgPath: path, dirty: make(chan struct{}, 1), writeErr: logErr}
 	a.ctx, a.cancel = context.WithCancel(context.Background())
 	systray.Run(a.onReady, a.onExit)
 }
 
 // setupLog writes to kopi.log next to the config. Never logs clip text or passphrases.
-func setupLog(dir string) {
-	os.MkdirAll(dir, 0o700)
+// It returns an error if the log can't be written, so the tray can say so: an
+// antivirus blocking writes there would also stop settings from being saved.
+func setupLog(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.SetOutput(io.Discard)
+		return err
+	}
 	p := filepath.Join(dir, "kopi.log")
 	if st, err := os.Stat(p); err == nil && st.Size() > 1<<20 {
 		os.Rename(p, p+".old")
 	}
 	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err == nil {
+		_, err = fmt.Fprintf(f, "%s kopi %s starting (%s/%s)\n",
+			time.Now().Format("2006/01/02 15:04:05"), version, runtime.GOOS, runtime.GOARCH)
+	}
 	if err != nil {
 		log.SetOutput(io.Discard)
-		return
+		return err
 	}
 	log.SetOutput(f)
-	log.Printf("kopi %s starting (%s/%s)", version, runtime.GOOS, runtime.GOARCH)
+	return nil
 }
 
 func (a *kopiApp) onReady() {
@@ -245,7 +255,7 @@ func (a *kopiApp) refresher() {
 
 func (a *kopiApp) redraw() {
 	a.mu.Lock()
-	n, startErr, started := a.node, a.startErr, a.started
+	n, startErr, started, writeErr := a.node, a.startErr, a.started, a.writeErr
 	flash := ""
 	if time.Now().Before(a.flashTil) {
 		flash = a.flash
@@ -261,6 +271,8 @@ func (a *kopiApp) redraw() {
 	switch {
 	case startErr != nil:
 		status = "Can't start — " + startErr.Error()
+	case writeErr != nil:
+		status = "Can't save settings — is antivirus blocking Kopi? (" + filepath.Dir(a.cfgPath) + ")"
 	case n == nil:
 		status = "Starting…"
 	case !n.Engine.HasKey():
@@ -392,7 +404,9 @@ func (a *kopiApp) setPassphraseFromTray() {
 		showMessage("Passphrase not changed: " + err.Error())
 		return
 	}
-	a.updateConfig(func(c *config.Config) { c.Passphrase = p })
+	if err := a.updateConfig(func(c *config.Config) { c.Passphrase = p }); err != nil {
+		return // updateConfig already told the user why
+	}
 	a.applyPassphrase(p)
 	showMessage("Passphrase saved. Set the same passphrase on your other devices.")
 }
@@ -414,15 +428,23 @@ func (a *kopiApp) currentNode() *app.Node {
 
 // updateConfig changes and saves the config, remembering the new mtime so the
 // watcher doesn't treat our own write as an outside change.
-func (a *kopiApp) updateConfig(change func(*config.Config)) {
+func (a *kopiApp) updateConfig(change func(*config.Config)) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	change(&a.cfg)
-	if err := config.Save(a.cfgPath, a.cfg); err != nil {
+	err := config.Save(a.cfgPath, a.cfg)
+	if err != nil {
 		log.Printf("saving config: %v", err)
-		return
+		a.writeErr = err
+		go showMessage("Kopi couldn't save its settings: " + err.Error() +
+			"\n\nIf you use antivirus with ransomware protection, allow kopi.exe to write to " +
+			filepath.Dir(a.cfgPath))
+	} else {
+		a.writeErr = nil
+		a.cfgMtime = mtime(a.cfgPath)
 	}
-	a.cfgMtime = mtime(a.cfgPath)
+	go a.markDirty()
+	return err
 }
 
 // watchConfig applies changes made outside the app, e.g. by `kopi passphrase`.
