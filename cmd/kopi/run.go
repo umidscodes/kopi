@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	gosync "sync"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/systray"
@@ -22,8 +23,12 @@ import (
 	"github.com/umidscodes/kopi/internal/transport"
 )
 
-// maxPeerSlots is how many devices the tray lists (menus can't grow cheaply).
-const maxPeerSlots = 8
+const (
+	// maxPeerSlots is how many devices the tray lists (menus can't grow cheaply).
+	maxPeerSlots = 8
+	// noPeersHintAfter is how long Kopi waits before suggesting what to check (DISC-7).
+	noPeersHintAfter = 30 * time.Second
+)
 
 type kopiApp struct {
 	cfgPath string
@@ -32,13 +37,15 @@ type kopiApp struct {
 	cfg      config.Config
 	cfgMtime time.Time
 	node     *app.Node
+	started  time.Time
 	startErr error
 	flash    string // short-lived status override ("Clip too large…")
 	flashTil time.Time
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	dirty  chan struct{}
+	ctx        context.Context
+	cancel     context.CancelFunc
+	dirty      chan struct{}
+	dialogOpen atomic.Bool
 
 	mStatus    *systray.MenuItem
 	mDevices   *systray.MenuItem
@@ -170,10 +177,11 @@ func (a *kopiApp) start() {
 		return
 	}
 	a.mu.Lock()
-	a.node = n
+	a.node, a.started = n, time.Now()
 	a.mu.Unlock()
 	log.Printf("listening on port %d as %q (%.6s)", n.Port(), cfg.DeviceName, cfg.DeviceID)
 	a.markDirty()
+	time.AfterFunc(noPeersHintAfter+time.Second, a.markDirty) // DISC-7 hint, if still alone
 }
 
 func (a *kopiApp) fail(err error) {
@@ -234,12 +242,17 @@ func (a *kopiApp) refresher() {
 
 func (a *kopiApp) redraw() {
 	a.mu.Lock()
-	n, startErr := a.node, a.startErr
+	n, startErr, started := a.node, a.startErr, a.started
 	flash := ""
 	if time.Now().Before(a.flashTil) {
 		flash = a.flash
 	}
 	a.mu.Unlock()
+
+	var peers []transport.PeerStatus
+	if n != nil {
+		peers = n.Hub.Peers()
+	}
 
 	status := "Syncing"
 	switch {
@@ -253,14 +266,11 @@ func (a *kopiApp) redraw() {
 		status = "Paused"
 	case flash != "":
 		status = flash
+	case len(peers) == 0 && time.Since(started) > noPeersHintAfter:
+		status = "No devices found — check firewall, or install Tailscale on both"
 	}
 	a.mStatus.SetTitle("Kopi — " + status)
 	systray.SetTooltip("Kopi — " + status)
-
-	var peers []transport.PeerStatus
-	if n != nil {
-		peers = n.Hub.Peers()
-	}
 	for i, m := range a.mPeers {
 		switch {
 		case i < len(peers):
@@ -319,7 +329,13 @@ func (a *kopiApp) clicks() {
 			a.updateConfig(func(c *config.Config) { c.IncludeSensitive = on })
 			log.Printf("include_sensitive=%v", on)
 		case <-a.mPass.ClickedCh:
-			go a.setPassphraseFromTray()
+			// One dialog at a time: further clicks while it's open are ignored.
+			if a.dialogOpen.CompareAndSwap(false, true) {
+				go func() {
+					defer a.dialogOpen.Store(false)
+					a.setPassphraseFromTray()
+				}()
+			}
 		case <-a.mQuit.ClickedCh:
 			systray.Quit()
 			return

@@ -174,6 +174,18 @@ func TestDISC3_RestartedPeerIsFoundAndSyncs(t *testing.T) {
 	eventually(t, time.Second, "restarted B receives", func() bool { return b2.clip.Text() == "welcome back" })
 }
 
+func TestNodeAnswersHelloWithItsIdentity(t *testing.T) {
+	lan := discovery.NewFakeLAN()
+	a := startNode(t, lan, "a-device-id", &keyAlpha)
+	id, err := transport.Hello(context.Background(), netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(a.Port())).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.ID != "a-device-id" || id.Name != "a-device-id" {
+		t.Fatalf("hello identity = %+v", id)
+	}
+}
+
 func TestDeadPeerDoesNotBlockOthers(t *testing.T) {
 	lan := discovery.NewFakeLAN()
 	a := startNode(t, lan, "a", &keyAlpha)

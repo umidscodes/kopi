@@ -9,7 +9,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const createNoWindow = 0x08000000
+const (
+	createNoWindow = 0x08000000
+	asfwAny        = ^uintptr(0) // ASFW_ANY: any process may take the foreground once
+)
+
+var procAllowSetForegroundWindow = windows.NewLazySystemDLL("user32.dll").NewProc("AllowSetForegroundWindow")
 
 // dialogPassphrase shows the standard Windows credential prompt (masked input).
 // The passphrase comes back over a private stdout pipe, never through a file.
@@ -21,6 +26,10 @@ if ($null -eq $c) { exit 2 }
 [Console]::Out.Write($c.GetNetworkCredential().Password)`
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+	// Windows stops background programs from putting windows in front of the user's
+	// work, so the dialog would open hidden behind other windows. The tray click made
+	// us eligible to take the foreground; pass that right on to the dialog process.
+	procAllowSetForegroundWindow.Call(asfwAny)
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError

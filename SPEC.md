@@ -7,15 +7,19 @@ Personal project. Not a product: no installers, no code signing, no telemetry.
 
 ## Goals
 
-- Text copied on any device appears in the clipboard of every other Kopi device on the LAN.
-- Zero manual peer setup: devices discover each other automatically.
+- Text copied on any device appears in the clipboard of every other Kopi device on the LAN,
+  or on the same Tailscale network (tailnet).
+- Zero manual peer setup: devices discover each other automatically, through mDNS on the
+  LAN and, when Tailscale is installed, through the tailnet's device list.
 - Only devices that know the shared passphrase can read or write your clipboard.
 - Lives in the system tray; otherwise invisible.
 
 ## Non-goals (v1)
 
 - Images, files, rich text/HTML (plain text only).
-- Sync outside the local network (Tailscale/remote peers are v2).
+- Sync over the open internet, or with devices that are neither on the LAN nor on your
+  tailnet. (Tailnet devices were added in v1 after mDNS proved unreliable on a real PC:
+  browsers and launchers that also listen on UDP 5353 can starve Kopi of mDNS traffic.)
 - Clipboard history.
 - Linux support (nice to have, not required).
 
@@ -90,7 +94,31 @@ Scenario: [DISC-3] A peer that restarts is found again
   Given A and B are peers
   When B restarts Kopi
   Then A lists B again and sync resumes without user action
+
+Scenario: [DISC-4] Tailnet peers are found even when LAN discovery fails
+  Given A and B are on the same tailnet and both run Kopi
+  And mDNS traffic between them is blocked
+  Then within 20 seconds each lists the other as a peer
+  And clips sync between them
+
+Scenario: [DISC-5] A device found both ways is listed once
+  Given B is discovered through mDNS and through the tailnet
+  Then A lists B exactly once
+  And a clip copied on A is applied on B exactly once
+
+Scenario: [DISC-6] Other tailnet devices are ignored
+  Given the tailnet contains a device that does not run Kopi
+  Then it is never listed as a peer
+
+Scenario: [DISC-7] The tray explains when nothing is found
+  Given Kopi has been running for 30 seconds with a passphrase set
+  And no peer has been found
+  Then the tray status suggests checking the firewall and Tailscale
 ```
+
+Discovery only reveals what mDNS already publishes: device ID, device name and protocol
+version. A Kopi node answers an unauthenticated "who are you?" request on its TCP port
+with exactly that; everything else requires the passphrase.
 
 ### Feature: Security
 
@@ -182,7 +210,9 @@ Scenario: [TRAY-2] Pausing stops both directions
 
 - Go, single binary per OS. Build with `go build ./...`; test with `go test ./...`.
 - Clipboard, tray and network access sit behind interfaces so core logic is testable with fakes.
-- Discovery via mDNS/DNS-SD (service `_kopi._tcp`).
+- Discovery via mDNS/DNS-SD (service `_kopi._tcp`), plus the tailnet's device list
+  (`tailscale status --json`) when the Tailscale CLI is available. Tailnet candidates
+  are confirmed with a TCP hello on the Kopi port before they are listed.
 - Encryption key derived from the passphrase (memory-hard KDF), authenticated encryption per
   message, message IDs and timestamps for replay protection. Use vetted libraries
   (`golang.org/x/crypto`); no hand-rolled crypto.

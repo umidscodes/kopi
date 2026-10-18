@@ -44,16 +44,17 @@ type seenPeer struct {
 
 // browser turns raw sightings from either implementation into a stable peer list.
 type browser struct {
-	self string
-	emit func(Event)
-	now  func() time.Time
+	self    string
+	emit    func(Event)
+	now     func() time.Time
+	timeout time.Duration // silence after which a peer is dropped
 
 	mu    gosync.Mutex
 	peers map[string]*seenPeer
 }
 
 func newBrowser(self string, emit func(Event)) *browser {
-	return &browser{self: self, emit: emit, now: time.Now, peers: map[string]*seenPeer{}}
+	return &browser{self: self, emit: emit, now: time.Now, timeout: PeerTimeout, peers: map[string]*seenPeer{}}
 }
 
 // seen records a sighting and emits Up when the peer is new or has new addresses.
@@ -98,7 +99,7 @@ func (b *browser) expire() {
 	var dead []string
 	b.mu.Lock()
 	for id, p := range b.peers {
-		if now.Sub(p.lastSeen) > PeerTimeout {
+		if now.Sub(p.lastSeen) > b.timeout {
 			dead = append(dead, id)
 		}
 	}
