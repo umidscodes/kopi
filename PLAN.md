@@ -84,4 +84,4 @@ touch is an interface, so the whole sync behavior is testable in CI with fakes.
 1. **Setting the passphrase.** Tray menus can't show a text box without pulling in a GUI
    toolkit. Proposal: `kopi passphrase` in a terminal (hidden input), and the tray item
    "Set passphrase…" opens a terminal running it. OK?
-2. **GitHub username** for the module path (currently `github.com/umutmardan/kopi`).
+2. **GitHub username** for the module path (currently `github.com/umidscodes/kopi`).

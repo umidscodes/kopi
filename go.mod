@@ -1,4 +1,4 @@
-module github.com/umutmardan/kopi
+module github.com/umidscodes/kopi
 
 go 1.27.0
 

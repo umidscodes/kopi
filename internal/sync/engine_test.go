@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/umutmardan/kopi/internal/clip"
-	"github.com/umutmardan/kopi/internal/proto"
+	"github.com/umidscodes/kopi/internal/clip"
+	"github.com/umidscodes/kopi/internal/proto"
 )
 
 var (

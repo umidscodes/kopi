@@ -11,8 +11,8 @@ import (
 	gosync "sync"
 	"time"
 
-	"github.com/umutmardan/kopi/internal/clip"
-	"github.com/umutmardan/kopi/internal/proto"
+	"github.com/umidscodes/kopi/internal/clip"
+	"github.com/umidscodes/kopi/internal/proto"
 )
 
 // ErrNoPassphrase is returned by Receive when no passphrase is configured (SEC-4).
