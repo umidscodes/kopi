@@ -16,7 +16,7 @@ with a note, and file a GitHub issue for every Fail (title starts with the case 
 | S2 | Verify checksums (`Get-FileHash -Algorithm SHA256 <zip>` / `shasum -a 256 <zip>`) | Match `SHA256SUMS` |
 | S3 | Windows: quit any running Kopi, unzip `kopi.exe` to `%LOCALAPPDATA%\Programs\Kopi\`, run it | SmartScreen warning → More info → Run anyway; tray icon appears |
 | S4 | Windows: allow `…\Programs\Kopi\kopi.exe` in the firewall (Windows / AVG), private networks | Rule exists |
-| S5 | macOS: quit Kopi, unzip, replace `~/Applications/Kopi.app`, open it | Gatekeeper bypass needed once; menu-bar icon appears |
+| S5 | macOS: quit Kopi, unzip, replace `~/Applications/Kopi.app`, open it | Gatekeeper blocks it; Done → Privacy & Security → Open Anyway (as in README) works; menu-bar icon appears |
 | S6 | macOS: allow Local Network when asked | Kopi on in Privacy & Security → Local Network |
 | S7 | Both: tray → Set passphrase…, same passphrase on both | Status "Kopi — Syncing"; each lists the other as *connected* after the first clip |
 

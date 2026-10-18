@@ -58,15 +58,19 @@ Unzip and move `Kopi.app` to `~/Applications`, then open it. The icon appears in
 menu bar.
 
 The app is built on GitHub's runners and is not notarized, so Gatekeeper blocks the
-first open. Do one of:
+first open ("could not verify … free of malware"). Click **Done** (not Move to Trash),
+then either:
 
-- right-click `Kopi.app` → **Open** → **Open**, or
-- System Settings → Privacy & Security → scroll to Kopi → **Open Anyway**, or
+- System Settings → Privacy & Security → scroll to **Security** → next to
+  *"Kopi" was blocked…* click **Open Anyway**, confirm with your password, then **Open**
+  (the button shows for about an hour after the blocked attempt), or
 - clear the quarantine flag yourself:
 
 ```sh
 xattr -dr com.apple.quarantine ~/Applications/Kopi.app
 ```
+
+(Right-click → Open no longer bypasses Gatekeeper since macOS 15.)
 
 macOS then asks whether Kopi may find devices on your local network — click **Allow**.
 If you missed the prompt: System Settings → Privacy & Security → Local Network →
