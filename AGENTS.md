@@ -31,6 +31,13 @@ review catches something new.
 
 - An agent reported a task as complete when the output was wrong. Check results
   yourself (run it, read the file back) before reporting success.
+- Fakes passed while real hardware failed (mDNS on macOS). Anything touching the OS or
+  network needs an opt-in real test (`KOPI_CLIPBOARD_TEST=1`, `KOPI_MDNS_TEST=1`) run
+  on both machines before the milestone counts as done.
+- When a test fails, verify the test harness first: a garbled prompt and two probes
+  that never overlapped both looked like product bugs.
+- Code in `_darwin.go` / `_darwin.c` can't be compiled on Windows. Push it to a branch
+  and let the macOS CI job (or the Mac over SSH) build it before merging.
 
 ## Rules
 

@@ -2,7 +2,13 @@
 // OS implementations live in build-tagged files; Fake is for tests.
 package clip
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// errNoText means the clipboard holds something other than text (an image, files…).
+var errNoText = errors.New("clipboard has no text")
 
 // Item is one local clipboard change.
 type Item struct {

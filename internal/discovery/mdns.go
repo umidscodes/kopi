@@ -1,3 +1,5 @@
+//go:build !darwin
+
 package discovery
 
 import (
@@ -5,32 +7,31 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/brutella/dnssd"
 
 	"github.com/umidscodes/kopi/internal/transport"
 )
 
-// ServiceType is Kopi's DNS-SD service type.
-const ServiceType = "_kopi._tcp"
-
 // MDNS announces this device with mDNS/DNS-SD and browses for others.
 // Only device ID, name and protocol version are published; nothing secret.
+//
+// This implementation runs its own mDNS stack (brutella/dnssd). On macOS the system
+// mDNSResponder owns port 5353 and our socket never sees other hosts' multicast, so
+// macOS uses the native Bonjour API instead (mdns_darwin.go).
 type MDNS struct {
 	Self transport.Peer // ID and Name; Addrs are ignored
 	Port int
 }
 
 func (m MDNS) Run(ctx context.Context, emit func(Event)) error {
-	cfg := dnssd.Config{
-		// Instance names must be unique on the LAN; the ID suffix keeps two devices
-		// with the same hostname apart.
-		Name: fmt.Sprintf("%s-%.6s", m.Self.Name, m.Self.ID),
+	svc, err := dnssd.NewService(dnssd.Config{
+		Name: instanceName(m.Self),
 		Type: ServiceType,
 		Port: m.Port,
-		Text: map[string]string{"id": m.Self.ID, "name": m.Self.Name, "v": "1"},
-	}
-	svc, err := dnssd.NewService(cfg)
+		Text: txtRecord(m.Self),
+	})
 	if err != nil {
 		return fmt.Errorf("mdns service: %w", err)
 	}
@@ -41,33 +42,45 @@ func (m MDNS) Run(ctx context.Context, emit func(Event)) error {
 	if _, err := rp.Add(svc); err != nil {
 		return fmt.Errorf("mdns add: %w", err)
 	}
+	respondErr := make(chan error, 1)
+	// Respond sends goodbye packets when ctx is cancelled, so peers drop us at once.
+	go func() { respondErr <- rp.Respond(ctx) }()
 
-	errc := make(chan error, 2)
-	// Respond sends goodbye packets when ctx is cancelled, so peers drop us at once (DISC-2).
-	go func() { errc <- rp.Respond(ctx) }()
-	go func() {
-		errc <- dnssd.LookupType(ctx, ServiceType+".local.",
-			func(e dnssd.BrowseEntry) {
-				if p, ok := peerFrom(e); ok && p.ID != m.Self.ID {
-					emit(Event{Up: true, Peer: p})
-				}
-			},
-			func(e dnssd.BrowseEntry) {
-				if id := e.Text["id"]; id != "" && id != m.Self.ID {
-					emit(Event{Up: false, Peer: transport.Peer{ID: id}})
-				}
-			})
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-errc:
-		if ctx.Err() != nil {
+	b := newBrowser(m.Self.ID, emit)
+	t := time.NewTicker(BrowseInterval)
+	defer t.Stop()
+	for {
+		round(ctx, b)
+		select {
+		case <-ctx.Done():
 			return nil
+		case err := <-respondErr:
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		case <-t.C:
 		}
-		return err
 	}
+}
+
+// round runs one browse of slightly less than BrowseInterval, then expires peers
+// that haven't answered for PeerTimeout.
+func round(ctx context.Context, b *browser) {
+	rctx, cancel := context.WithTimeout(ctx, BrowseInterval-500*time.Millisecond)
+	defer cancel()
+	dnssd.LookupType(rctx, ServiceType+".local.",
+		func(e dnssd.BrowseEntry) {
+			if p, ok := peerFrom(e); ok {
+				b.seen(p)
+			}
+		},
+		func(e dnssd.BrowseEntry) {
+			if id := e.Text["id"]; id != "" {
+				b.gone(id) // goodbye packet: drop at once
+			}
+		})
+	b.expire()
 }
 
 func peerFrom(e dnssd.BrowseEntry) (transport.Peer, bool) {
@@ -77,23 +90,16 @@ func peerFrom(e dnssd.BrowseEntry) (transport.Peer, bool) {
 	}
 	p := transport.Peer{ID: id, Name: e.Text["name"]}
 	for _, ip := range e.IPs {
-		a, ok := netip.AddrFromSlice(ip)
-		if !ok {
-			continue
+		if a, ok := usable(ip); ok {
+			p.Addrs = append(p.Addrs, netip.AddrPortFrom(a, uint16(e.Port)))
 		}
-		a = a.Unmap()
-		if a.Is6() && a.IsLinkLocalUnicast() {
-			// Needs an interface zone to dial; IPv4 or global IPv6 will do.
-			continue
-		}
-		p.Addrs = append(p.Addrs, netip.AddrPortFrom(a, uint16(e.Port)))
 	}
 	if len(p.Addrs) == 0 {
 		// Fall back to resolving the advertised host name.
 		if ips, err := net.LookupIP(e.Host); err == nil {
 			for _, ip := range ips {
-				if a, ok := netip.AddrFromSlice(ip); ok && !a.Unmap().IsLinkLocalUnicast() {
-					p.Addrs = append(p.Addrs, netip.AddrPortFrom(a.Unmap(), uint16(e.Port)))
+				if a, ok := usable(ip); ok {
+					p.Addrs = append(p.Addrs, netip.AddrPortFrom(a, uint16(e.Port)))
 				}
 			}
 		}
