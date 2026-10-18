@@ -63,6 +63,12 @@ touch is an interface, so the whole sync behavior is testable in CI with fakes.
 - Integration test: 3 engines on localhost with fake clipboards, real TCP + crypto.
   This covers most of the "Docker multi-peer lab" idea without Docker.
 - Done when: `DISC-*` and multi-peer `SYNC-*` scenarios pass locally and in CI.
+- Status: done. Discovery uses `brutella/dnssd` (browse with add/remove callbacks;
+  sends goodbye packets on clean shutdown). Each send gets a 1-byte ack so the sender
+  can tell "passphrase mismatch" from "unreachable".
+- Real-mDNS test is opt-in (`KOPI_MDNS_TEST=1`) and still to run on real hardware in M3.
+  Watch for: Windows' own mDNS service also using UDP 5353, and machines with several
+  network interfaces (Hyper-V, Tailscale) announcing unreachable addresses.
 
 ### M3 — Real clipboards
 - Windows implementation + sensitive detection. **Owner: Claude**
