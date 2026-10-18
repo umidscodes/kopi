@@ -7,6 +7,11 @@ Instructions for coding agents (omp, Claude Code) working on Kopi.
 - `SPEC.md` defines behavior. If code and spec disagree, the spec wins. If the spec is
   ambiguous or wrong, stop and ask; do not silently pick an interpretation.
 - Every change should map to one or more scenarios in `SPEC.md`.
+- `PLAN.md` holds the architecture, design decisions and milestones. Work only on the
+  milestone or task you were given; don't start the next one.
+- Scenarios have IDs like `SYNC-4` or `SEC-1`. Name tests after them and put the ID in
+  the test name, e.g. `TestSYNC4_ReceivedClipIsNotRebroadcast`, so we can trace every
+  scenario to its tests.
 
 ## Commands
 
@@ -17,6 +22,15 @@ Instructions for coding agents (omp, Claude Code) working on Kopi.
 - Format: `gofmt -w .`
 
 Run build, vet and tests before saying a task is done, and show their output.
+"Done" without that output does not count as done.
+
+## Lessons learned
+
+Mistakes agents made on this project, so they aren't repeated. Add to this list when a
+review catches something new.
+
+- An agent reported a task as complete when the output was wrong. Check results
+  yourself (run it, read the file back) before reporting success.
 
 ## Rules
 

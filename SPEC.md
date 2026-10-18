@@ -35,40 +35,40 @@ Personal project. Not a product: no installers, no code signing, no telemetry.
 ### Feature: Sync
 
 ```gherkin
-Scenario: Text copied on one device is available on another
+Scenario: [SYNC-1] Text copied on one device is available on another
   Given Kopi is running on device A and device B with the same passphrase
   And they are on the same network
   When I copy "hello" on device A
   Then within 1 second the clipboard on device B contains "hello"
 
-Scenario: Sync works in both directions
+Scenario: [SYNC-2] Sync works in both directions
   Given A and B are syncing
   When I copy "from B" on device B
   Then the clipboard on device A contains "from B"
 
-Scenario: Sync reaches every peer
+Scenario: [SYNC-3] Sync reaches every peer
   Given Kopi is running on devices A, B and C
   When I copy "all of you" on device A
   Then the clipboards on B and C both contain "all of you"
 
-Scenario: A received clip is never re-broadcast (no loops)
+Scenario: [SYNC-4] A received clip is never re-broadcast (no loops)
   Given A, B and C are syncing
   When I copy "once" on device A
   Then each peer receives "once" exactly one time
   And no device sends "once" back out after receiving it
 
-Scenario: Copying the same text twice still syncs
+Scenario: [SYNC-5] Copying the same text twice still syncs
   Given A and B are syncing
   And the last synced clip was "x"
   When I copy "y" on A and then "x" again on A
   Then B ends with "x"
 
-Scenario: Latest copy wins
+Scenario: [SYNC-6] Latest copy wins
   Given A and B are syncing
   When A copies "first" and B copies "second" shortly after
   Then both devices end with "second"
 
-Scenario: Unicode survives the trip
+Scenario: [SYNC-7] Unicode survives the trip
   When I copy "héllo 🌍 你好\r\nline2" on A
   Then B receives the same characters
   And line endings are converted to the receiving OS's convention
@@ -77,16 +77,16 @@ Scenario: Unicode survives the trip
 ### Feature: Discovery
 
 ```gherkin
-Scenario: Peers find each other automatically
+Scenario: [DISC-1] Peers find each other automatically
   Given Kopi is started on A and B on the same LAN
   Then within 10 seconds each lists the other as a peer in the tray menu
 
-Scenario: A peer that goes away is removed
+Scenario: [DISC-2] A peer that goes away is removed
   Given A and B are peers
   When Kopi on B quits
   Then within 30 seconds A no longer lists B
 
-Scenario: A peer that restarts is found again
+Scenario: [DISC-3] A peer that restarts is found again
   Given A and B are peers
   When B restarts Kopi
   Then A lists B again and sync resumes without user action
@@ -95,22 +95,22 @@ Scenario: A peer that restarts is found again
 ### Feature: Security
 
 ```gherkin
-Scenario: Wrong passphrase cannot sync
+Scenario: [SEC-1] Wrong passphrase cannot sync
   Given A uses passphrase "alpha" and B uses "bravo"
   When I copy "secret" on A
   Then B's clipboard is unchanged
   And B's tray shows A as "passphrase mismatch" (not as a normal peer)
 
-Scenario: Traffic is encrypted
+Scenario: [SEC-2] Traffic is encrypted
   When a clip is sent between peers
   Then the clip text does not appear in plain form in network traffic
 
-Scenario: Replayed messages are rejected
+Scenario: [SEC-3] Replayed messages are rejected
   Given an attacker captured an earlier encrypted message from A
   When the attacker re-sends it to B
   Then B ignores it
 
-Scenario: No passphrase means no sync
+Scenario: [SEC-4] No passphrase means no sync
   Given Kopi starts with no passphrase configured
   Then it does not send or accept clips
   And the tray tells me to set a passphrase
@@ -119,12 +119,12 @@ Scenario: No passphrase means no sync
 ### Feature: Sensitive content
 
 ```gherkin
-Scenario: Sensitive clips are skipped by default
+Scenario: [SENS-1] Sensitive clips are skipped by default
   Given "Include sensitive content" is off (default)
   When I copy a password from a password manager on A
   Then nothing is sent to any peer
 
-Scenario: Sensitive clips can be opted in
+Scenario: [SENS-2] Sensitive clips can be opted in
   Given "Include sensitive content" is on
   When I copy a password from a password manager on A
   Then B receives it
@@ -137,16 +137,16 @@ and `org.nspasteboard.TransientType`.
 ### Feature: Size limit
 
 ```gherkin
-Scenario: Oversized clips are not sent
+Scenario: [SIZE-1] Oversized clips are not sent
   When I copy more than 15 MB of text on A
   Then A does not send it
   And A's tray briefly shows "Clip too large (max 15 MB)"
 
-Scenario: Oversized clips are rejected on receive
+Scenario: [SIZE-2] Oversized clips are rejected on receive
   Given a peer sends a message larger than 15 MB
   Then the receiver rejects it without reading it fully into memory
 
-Scenario: Exactly at the limit
+Scenario: [SIZE-3] Exactly at the limit
   When I copy exactly 15 MB of text on A
   Then B receives it
 ```
@@ -156,7 +156,7 @@ Scenario: Exactly at the limit
 ### Feature: Tray
 
 ```gherkin
-Scenario: Tray menu
+Scenario: [TRAY-1] Tray menu
   Then the tray menu shows:
     | Item                          |
     | Status (Syncing / Paused / …) |
@@ -166,7 +166,7 @@ Scenario: Tray menu
     | Set passphrase…               |
     | Quit                          |
 
-Scenario: Pausing stops both directions
+Scenario: [TRAY-2] Pausing stops both directions
   Given sync is paused on A
   When I copy on A, or a peer sends to A
   Then nothing is sent from A and A's clipboard is not changed by peers
