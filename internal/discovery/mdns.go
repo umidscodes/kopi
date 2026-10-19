@@ -88,7 +88,7 @@ func peerFrom(e dnssd.BrowseEntry) (transport.Peer, bool) {
 	if id == "" || e.Port <= 0 || e.Port > 65535 {
 		return transport.Peer{}, false
 	}
-	p := transport.Peer{ID: id, Name: e.Text["name"]}
+	p := transport.Peer{ID: id, Name: e.Text["name"], Version: versionFromTXT(e.Text)}
 	for _, ip := range e.IPs {
 		if a, ok := usable(ip); ok {
 			p.Addrs = append(p.Addrs, netip.AddrPortFrom(a, uint16(e.Port)))
