@@ -203,7 +203,7 @@ func goResolve(ctx C.uintptr_t, ifIndex C.uint32_t, errCode C.int32_t, host *C.c
 		r.mu.Unlock()
 		return
 	}
-	in.peer = transport.Peer{ID: kv["id"], Name: kv["name"]}
+	in.peer = transport.Peer{ID: kv["id"], Name: kv["name"], Version: versionFromTXT(kv)}
 	in.port = uint16(port)
 	// One answer is enough; stop resolving and look up the host's addresses.
 	C.kopi_dealloc_now(in.resolve)

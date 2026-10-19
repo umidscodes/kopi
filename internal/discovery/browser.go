@@ -4,9 +4,11 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strconv"
 	gosync "sync"
 	"time"
 
+	"github.com/umidscodes/kopi/internal/proto"
 	"github.com/umidscodes/kopi/internal/transport"
 )
 
@@ -34,7 +36,18 @@ func instanceName(self transport.Peer) string {
 }
 
 func txtRecord(self transport.Peer) map[string]string {
-	return map[string]string{"id": self.ID, "name": self.Name, "v": "1"}
+	return map[string]string{"id": self.ID, "name": self.Name, "v": strconv.Itoa(proto.Version)}
+}
+
+// versionFromTXT reads the protocol version a peer publishes in its TXT key "v".
+// Missing, empty, non-numeric or non-positive gives 0: unknown, which the hub treats
+// like our own version (normal states), never as "needs update" (RECENT-21).
+func versionFromTXT(kv map[string]string) int {
+	v, err := strconv.Atoi(kv["v"])
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v
 }
 
 type seenPeer struct {
@@ -57,7 +70,9 @@ func newBrowser(self string, emit func(Event)) *browser {
 	return &browser{self: self, emit: emit, now: time.Now, timeout: PeerTimeout, peers: map[string]*seenPeer{}}
 }
 
-// seen records a sighting and emits Up when the peer is new or has new addresses.
+// seen records a sighting and emits Up when the peer is new, has new addresses or
+// publishes a new protocol version. A sighting without a version (0) keeps the one
+// we know.
 func (b *browser) seen(p transport.Peer) {
 	if p.ID == b.self {
 		return
@@ -68,6 +83,10 @@ func (b *browser) seen(p transport.Peer) {
 	if !ok {
 		cur = &seenPeer{peer: transport.Peer{ID: p.ID, Name: p.Name}}
 		b.peers[p.ID] = cur
+	}
+	if p.Version != 0 && p.Version != cur.peer.Version {
+		cur.peer.Version = p.Version
+		changed = true
 	}
 	for _, a := range p.Addrs {
 		if !slices.Contains(cur.peer.Addrs, a) {

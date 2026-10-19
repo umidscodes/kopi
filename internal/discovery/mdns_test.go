@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/umidscodes/kopi/internal/proto"
 	"github.com/umidscodes/kopi/internal/transport"
 )
 
@@ -73,8 +74,13 @@ func TestDISC_MDNS_TwoDevicesFindAndLoseEachOther(t *testing.T) {
 		return ok
 	})
 	sa.mu.Lock()
-	t.Logf("A sees B at %v", sa.up[idB].Addrs)
+	t.Logf("A sees B at %v, version %d", sa.up[idB].Addrs, sa.up[idB].Version)
+	gotV := sa.up[idB].Version
 	sa.mu.Unlock()
+	// RECENT-21: the version published in TXT "v" reaches the other device.
+	if gotV != proto.Version {
+		t.Fatalf("A sees B with Version %d, want %d", gotV, proto.Version)
+	}
 
 	// DISC-2: B quits cleanly; A must notice within 30 seconds.
 	cancelB()
