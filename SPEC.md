@@ -20,7 +20,9 @@ Personal project. Not a product: no installers, no code signing, no telemetry.
 - Sync over the open internet, or with devices that are neither on the LAN nor on your
   tailnet. (Tailnet devices were added in v1 after mDNS proved unreliable on a real PC:
   browsers and launchers that also listen on UDP 5353 can starve Kopi of mDNS traffic.)
-- Clipboard history.
+- Clipboard history that is saved to disk, survives a restart or holds more than a few
+  entries. (v0.2 adds only a memory-only list of the last 5 synced clips; see
+  Feature: Recent clips.)
 - Linux support (nice to have, not required).
 
 ## Platforms
@@ -33,6 +35,7 @@ Personal project. Not a product: no installers, no code signing, no telemetry.
 - **Peer**: another device running Kopi with the same passphrase.
 - **Clip**: one piece of copied text.
 - **Sensitive clip**: text the source app marked as private (password managers do this).
+- **Recent clips**: the tray submenu listing the last clips this device synced (v0.2).
 
 ## Acceptance criteria
 
@@ -148,12 +151,12 @@ Scenario: [SEC-4] No passphrase means no sync
 
 ```gherkin
 Scenario: [SENS-1] Sensitive clips are skipped by default
-  Given "Include sensitive content" is off (default)
+  Given "Send passwords copied on this device" is off (default)
   When I copy a password from a password manager on A
   Then nothing is sent to any peer
 
 Scenario: [SENS-2] Sensitive clips can be opted in
-  Given "Include sensitive content" is on
+  Given "Send passwords copied on this device" is on
   When I copy a password from a password manager on A
   Then B receives it
 ```
@@ -189,20 +192,237 @@ Scenario: [SIZE-3] Exactly at the limit
 
 ```gherkin
 Scenario: [TRAY-1] Tray menu
-  Then the tray menu shows:
-    | Item                          |
-    | Status (Syncing / Paused / …) |
-    | Peers (list of device names)  |
-    | Pause sync (toggle)           |
-    | Include sensitive content     |
-    | Set passphrase…               |
-    | Quit                          |
+  Then the tray menu shows, in this order:
+    | Item                                            | Kind                          |
+    | Kopi — <status> (Syncing / Paused / …)          | disabled status line          |
+    | Devices                                         | disabled heading              |
+    | <device name> — <peer state>, one per peer      | disabled, up to 8 lines       |
+    | Recent clips (v0.2)                             | submenu, see Feature: Recent clips |
+    | Pause sync                                      | checkbox                      |
+    | Send passwords copied on this device            | checkbox                      |
+    | Set passphrase…                                 | opens a dialog                |
+    | Start at login                                  | checkbox                      |
+    | Quit Kopi                                       | item                          |
+  And when no peer is known, the device list shows "No other devices found yet"
+  And <peer state> is one of:
+    | Peer state          | Meaning                                                    |
+    | found               | discovered, no message exchanged yet                       |
+    | connected           | clips sync with this peer                                  |
+    | passphrase mismatch | the peer uses a different passphrase (SEC-1)               |
+    | unreachable         | the peer was found but cannot be connected to              |
+    | needs update        | the peer runs a different Kopi protocol version (v0.2)     |
 
 Scenario: [TRAY-2] Pausing stops both directions
   Given sync is paused on A
   When I copy on A, or a peer sends to A
   Then nothing is sent from A and A's clipboard is not changed by peers
 ```
+
+### Feature: Recent clips
+
+Added in v0.2, so that I can get back a clip I synced a moment ago after copying
+something else over it, without copying it again on the source device.
+
+A **synced clip** is one this device sent to its peers, or one it received from a peer
+and put on its clipboard. Each device keeps its own list, in memory only. It holds at
+most 5 entries, newest first.
+
+```gherkin
+Scenario: [RECENT-1] A clip sent from this device is listed
+  Given A and B are syncing
+  When I copy "hello" on A
+  Then within 1 second A's "Recent clips" submenu shows "hello — this device — just now"
+    as its first entry
+
+Scenario: [RECENT-2] A clip received from a peer is listed
+  Given A (named "Office PC") and B are syncing
+  When I copy "hello" on A
+  Then within 1 second B's "Recent clips" submenu shows "hello — Office PC — just now"
+    as its first entry
+
+Scenario: [RECENT-3] Newest first, at most 5 entries
+  Given A and B are syncing
+  When I copy "c1", "c2", "c3", "c4", "c5" and "c6" on A, in that order
+  Then A's "Recent clips" lists exactly "c6", "c5", "c4", "c3", "c2", in that order
+
+Scenario: [RECENT-4] The same text is listed once, at the top
+  Given A and B are syncing
+  When I copy "x", then "y", then "x" again on A
+  Then A's "Recent clips" lists exactly "x", "y", in that order
+
+Scenario: [RECENT-5] Clicking an entry restores it and syncs it as a fresh copy
+  Given A and B are syncing
+  And A's "Recent clips" lists "y", "x"
+  When I click "x" in A's "Recent clips"
+  Then within 1 second A's clipboard contains "x"
+  And within 1 second B's clipboard contains "x"
+  And A's "Recent clips" lists "x — this device — just now", then "y"
+  And B's "Recent clips" lists "x" first, with A's name as the source
+
+Scenario: [RECENT-6] Restoring the clip just received still syncs it (restore is not an echo)
+  Given A, B and C are syncing
+  And C is paused and its clipboard contains "older"
+  When I copy "one" on A
+  And B receives "one" and I copy nothing else on B
+  And I resume sync on C
+  And I click "one" in B's "Recent clips"
+  Then within 1 second C's clipboard contains "one"
+  And B sends "one" exactly one time for that click
+  And no device sends "one" back out after receiving it
+
+Scenario: [RECENT-7] Restoring while paused only changes this device
+  Given A and B are syncing
+  And A's "Recent clips" lists "y", "x"
+  And sync is paused on A
+  When I click "x" in A's "Recent clips"
+  Then A's clipboard contains "x"
+  And nothing is sent from A
+  And A's "Recent clips" lists "x", then "y"
+
+Scenario: [RECENT-8] Preview text
+  When a clip with the following text is synced
+  Then its entry's preview is:
+    | Clip text                                                     | Preview                                       |
+    | hello                                                         | hello                                         |
+    | "  Dear team,\r\nthe release is ready for testing today.  "   | Dear team, the release is ready for test…     |
+    | 0123456789012345678901234567890123456789                      | 0123456789012345678901234567890123456789      |
+    | héllo 🌍 你好                                                 | héllo 🌍 你好                                 |
+    | "a\tb"                                                        | a b                                           |
+    | "  \n\t  "                                                    | (blank)                                       |
+  # Quoted cells use \r, \n and \t for carriage return, line feed and tab.
+  # Rules: each line break ("\r\n" or "\n") and each tab becomes one space; leading and
+  # trailing whitespace is trimmed; then the first 40 characters (Unicode characters, not
+  # bytes) are shown, followed by "…" only if the text was longer than 40 characters.
+
+Scenario: [RECENT-9] Source label
+  Then each entry's source is:
+    | Clip came from                                | Source shown                         |
+    | this device                                   | this device                          |
+    | a peer whose name is known (e.g. "Mac")       | Mac                                  |
+    | a peer whose name is not known                | the first 6 characters of its ID     |
+
+Scenario: [RECENT-10] Age label
+  Then each entry's age, measured from when this device sent or applied it, is:
+    | Age                    | Shown        |
+    | less than 60 seconds   | just now     |
+    | 1 to 59 minutes        | N min        |
+    | 1 to 23 hours          | N h          |
+    | 24 hours or more       | N d          |
+  And N is rounded down (e.g. 119 seconds shows "1 min")
+  And the labels are updated at least once every 60 seconds while Kopi is running
+
+Scenario: [RECENT-11] Empty list
+  Given no clip has been synced since Kopi started
+  Then "Recent clips" shows one disabled item "No recent clips"
+  And its "Clear" item is disabled
+
+Scenario: [RECENT-12] Clear empties the list on this device only
+  Given A and B are syncing
+  And A's and B's "Recent clips" both list "x"
+  And A's clipboard contains "x"
+  When I click "Clear" in A's "Recent clips"
+  Then A's "Recent clips" shows "No recent clips"
+  And A's clipboard still contains "x"
+  And B's "Recent clips" still lists "x"
+
+Scenario: [RECENT-13] Changing the passphrase empties the list
+  Given A's "Recent clips" lists "x"
+  When I set a new passphrase on A
+  Then A's "Recent clips" shows "No recent clips"
+
+Scenario: [RECENT-14] The list is never saved
+  Given A's "Recent clips" lists "find-me-123"
+  When I quit Kopi on A and start it again
+  Then A's "Recent clips" shows "No recent clips"
+  And "find-me-123" does not appear in any file in Kopi's config folder (including kopi.log)
+
+Scenario: [RECENT-15] Pausing keeps the list
+  Given A's "Recent clips" lists "x"
+  When I pause sync on A and then resume it
+  Then A's "Recent clips" still lists "x"
+
+Scenario Outline: [RECENT-16] Clips that did not sync are not listed
+  Given A and B are syncing
+  And <situation>
+  When I copy "not-synced" on A
+  Then "not-synced" is not in A's "Recent clips"
+  And "not-synced" is not in B's "Recent clips"
+
+  Examples:
+    | situation                                                         |
+    | sync is paused on A                                               |
+    | A has no passphrase set                                           |
+    | "not-synced" is more than 15 MB (see SIZE-1)                      |
+    | "not-synced" is sensitive and A's sensitive setting is off        |
+
+Scenario: [RECENT-17] Clips that a receiver does not apply are not listed
+  Given A and B are syncing
+  When B receives a clip it does not apply (an older clip that lost under SYNC-6,
+    a replayed message under SEC-3, or any clip while B is paused)
+  Then that clip is not in B's "Recent clips"
+
+Scenario: [RECENT-18] Sensitive clips are never listed on the sending device
+  Given "Send passwords copied on this device" is on for A
+  When I copy a password from a password manager on A
+  Then B receives it (SENS-2)
+  And it is not in A's "Recent clips"
+
+Scenario: [RECENT-19] Sensitive clips are never listed on the receiving device
+  Given A and B both run v0.2
+  And "Send passwords copied on this device" is on for A
+  When I copy a password from a password manager on A
+  Then within 1 second B's clipboard contains it
+  And it is not in B's "Recent clips"
+
+Scenario: [RECENT-20] v0.1 and v0.2 devices do not exchange clips
+  Given A runs v0.2 and B runs v0.1, with the same passphrase
+  And A's clipboard contains "a-before" and B's clipboard contains "b-before"
+  When I copy "to old" on A
+  Then 5 seconds later B's clipboard still contains "b-before"
+  When I copy "from old" on B
+  Then 5 seconds later A's clipboard still contains "to old"
+  And "from old" is not in A's "Recent clips"
+
+Scenario: [RECENT-21] A v0.2 device shows a v0.1 peer as "needs update"
+  Given A runs v0.2 and B runs v0.1, on the same LAN
+  When both are started
+  Then within 10 seconds A's tray lists B as "<B's name> — needs update"
+  And A never lists B as "passphrase mismatch" or "unreachable" while B is running
+  And this holds whether or not A and B use the same passphrase
+  # Over the tailnet only (no mDNS), the limit is 20 seconds, as in DISC-4.
+
+Scenario: [RECENT-22] Sensitive-content rules are unchanged between v0.2 devices
+  Given A and B both run v0.2
+  Then SENS-1 and SENS-2 pass unchanged between A and B
+```
+
+v0.2 uses a new message format (protocol version 2) that carries a "sensitive" flag, so a
+receiver knows not to list a sensitive clip (RECENT-19). v0.1 and v0.2 cannot exchange
+clips: upgrade every device together. Whatever a v0.1 device shows for a v0.2 peer is
+v0.1's already-shipped behaviour and is out of scope, except that the v0.2 device must
+never apply a clip from it or send it any clip text it can apply.
+
+Restoring and loops: SYNC-4 forbids a device from *automatically* re-sending a clip it
+just received. Clicking a Recent clips entry is a deliberate new copy by the user, so it
+is sent once as a new clip with a new timestamp, even when it is the clip this device
+just received (RECENT-6). The clipboard change caused by the restore must not be sent a
+second time. SYNC-5 is unchanged.
+
+Clip text in the list is kept in memory only. Like the rest of Kopi, it is never
+written to disk or to the log (log sizes and hashes only).
+
+**Non-goals (Recent clips)**
+
+- Saving the list to disk, or keeping it across a restart.
+- More or fewer than 5 entries, or a setting to change that number.
+- Syncing the list itself between devices (each device has its own list).
+- Search, pinning, editing or deleting single entries.
+- Showing the full clip text (e.g. as a tooltip or preview window).
+- Listing clips copied locally that did not sync.
+- Images, files or rich text (still plain text only).
+- Syncing between devices on different versions (v0.1 with v0.2). Every device must
+  run v0.2; mixed versions show "needs update" on the v0.2 side and do not sync.
+- Changing what an already-installed v0.1 device shows or does.
 
 ### Feature: Configuration
 
