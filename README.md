@@ -15,7 +15,7 @@ It is a personal project, not a product: no installers, no code signing, no tele
   Argon2id, and each message is sealed with XChaCha20-Poly1305. A wrong passphrase
   means nothing decrypts; replayed messages are rejected.
 - Sensitive copies (password managers and the like) are **not** synced unless you turn
-  on "Include sensitive content". Clips over 15 MB are not sent.
+  on "Send passwords copied on this device". Clips over 15 MB are not sent.
 - Nothing leaves your devices: no server, no accounts, no cloud.
 
 ## Install
