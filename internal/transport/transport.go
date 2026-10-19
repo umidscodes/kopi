@@ -58,7 +58,7 @@ type Identity struct {
 }
 
 // helloMagic is a request frame asking "who are you?". Sealed messages always start
-// with proto's version byte (1), so the two can never be confused.
+// with proto.Version (2), never 'K', so the two can never be confused.
 var helloMagic = []byte("KOPI?")
 
 const (
