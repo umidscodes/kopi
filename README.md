@@ -88,7 +88,7 @@ turn **Kopi** on.
    - a status line (`Kopi — Syncing`, `Paused`, `Set a passphrase to start syncing`,
      or a hint if nothing was found),
    - **Devices**: your peers, each marked `connected`, `found`,
-     `passphrase mismatch`, `unreachable` or `needs update`,
+     `passphrase mismatch`, `unreachable` or `needs update` (v0.2),
    - **Recent clips** — a submenu with the last clips this device synced (v0.2),
    - **Pause sync** — stop sending and receiving,
    - **Send passwords copied on this device** — off by default; it's the *copying*
@@ -113,9 +113,10 @@ networks. Nothing to configure in Kopi; install Tailscale and sign in on both de
 
 The **Recent clips** submenu lists the last 5 clips this device synced — sent or
 received — newest first; click one to put it back on your clipboard and sync it as a
-fresh copy. The list is **memory only**: it holds the last 5 entries, is never saved to
-disk or logged, and is empty after a restart (or after you change the passphrase).
-Password-manager copies that were skipped as sensitive never appear.
+fresh copy (unless sync is paused: then only this device's clipboard changes). The
+list is **memory only**: it holds the last 5 entries, is never saved to disk or
+logged, and is empty after a restart (or after you change the passphrase). Clips
+marked as passwords/sensitive are never listed, even when they are sent.
 
 ## Upgrading to v0.2
 
