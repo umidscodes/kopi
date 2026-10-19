@@ -355,6 +355,106 @@ func TestHubBroadcastTracksOKAndMismatch(t *testing.T) {
 	}
 }
 
+// flakySend fails with a network error for the first n calls, then succeeds.
+type flakySend struct {
+	mu    sync.Mutex
+	n     int
+	calls int
+}
+
+func (f *flakySend) send(context.Context, string, []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls <= f.n {
+		return errors.New("connect: no route to host")
+	}
+	return nil
+}
+
+func (f *flakySend) count() int { f.mu.Lock(); defer f.mu.Unlock(); return f.calls }
+
+func newRetryHub(f *flakySend) *transport.Hub {
+	h := transport.NewHub()
+	h.Send = f.send
+	h.RetryDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond}
+	h.Upsert(transport.Peer{ID: "mac", Name: "Mac", Addrs: []netip.AddrPort{netip.MustParseAddrPort("192.168.2.86:47800")}})
+	return h
+}
+
+func TestHubRetriesUntilPeerIsBack(t *testing.T) {
+	f := &flakySend{n: 2} // e.g. the Mac's Wi-Fi is still reconnecting after sleep
+	h := newRetryHub(f)
+	h.Broadcast([]byte("clip"))
+	h.Wait()
+	if f.count() != 3 {
+		t.Fatalf("send called %d times, want 3 (2 failures, then success)", f.count())
+	}
+	if s := h.Peers()[0].State; s != transport.StateOK {
+		t.Fatalf("state = %v, want ok after the retry worked", s)
+	}
+}
+
+func TestHubGivesUpAfterRetries(t *testing.T) {
+	f := &flakySend{n: 100}
+	h := newRetryHub(f)
+	h.Broadcast([]byte("clip"))
+	h.Wait()
+	if f.count() != 4 {
+		t.Fatalf("send called %d times, want 1 + 3 retries", f.count())
+	}
+	if s := h.Peers()[0].State; s != transport.StateUnreachable {
+		t.Fatalf("state = %v, want unreachable", s)
+	}
+}
+
+func TestHubNewerClipCancelsOlderRetries(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	h := transport.NewHub()
+	h.RetryDelays = []time.Duration{50 * time.Millisecond, 50 * time.Millisecond}
+	h.Send = func(_ context.Context, _ string, msg []byte) error {
+		mu.Lock()
+		sent = append(sent, string(msg))
+		mu.Unlock()
+		return errors.New("unreachable")
+	}
+	h.Upsert(transport.Peer{ID: "mac", Addrs: []netip.AddrPort{netip.MustParseAddrPort("192.168.2.86:47800")}})
+	h.Broadcast([]byte("old"))
+	time.Sleep(10 * time.Millisecond)
+	h.Broadcast([]byte("new"))
+	h.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	old := 0
+	for _, s := range sent {
+		if s == "old" {
+			old++
+		}
+	}
+	if old != 1 {
+		t.Fatalf("old clip sent %d times, want 1 (its retries are superseded): %v", old, sent)
+	}
+}
+
+func TestHubStopAbortsRetries(t *testing.T) {
+	f := &flakySend{n: 100}
+	h := transport.NewHub()
+	h.Send = f.send
+	h.RetryDelays = []time.Duration{time.Hour}
+	h.Upsert(transport.Peer{ID: "mac", Addrs: []netip.AddrPort{netip.MustParseAddrPort("192.168.2.86:47800")}})
+	h.Broadcast([]byte("clip"))
+	time.Sleep(20 * time.Millisecond)
+	h.Stop()
+	done := make(chan struct{})
+	go func() { h.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait still blocked after Stop")
+	}
+}
+
 func TestHubUpsertMergesAddrsIPv4First(t *testing.T) {
 	v6 := netip.MustParseAddrPort("[fe80::1]:47800")
 	v4 := netip.MustParseAddrPort("127.0.0.1:47800")

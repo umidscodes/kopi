@@ -34,6 +34,9 @@ review catches something new.
 - Fakes passed while real hardware failed (mDNS on macOS). Anything touching the OS or
   network needs an opt-in real test (`KOPI_CLIPBOARD_TEST=1`, `KOPI_MDNS_TEST=1`) run
   on both machines before the milestone counts as done.
+- Verify the observer, not just the system: an agent's own shell may be sandboxed and
+  see a different copy of files outside the repo. Kopi "didn't save settings" for a day
+  until the user opened the file in Notepad and it was fine.
 - When a test fails, verify the test harness first: a garbled prompt and two probes
   that never overlapped both looked like product bugs.
 - Real networks are hostile: other apps share UDP 5353 and antivirus firewalls drop

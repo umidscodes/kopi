@@ -15,6 +15,7 @@ import (
 	"fyne.io/systray"
 
 	"github.com/umidscodes/kopi/internal/app"
+	"github.com/umidscodes/kopi/internal/autostart"
 	"github.com/umidscodes/kopi/internal/clip"
 	"github.com/umidscodes/kopi/internal/config"
 	"github.com/umidscodes/kopi/internal/icon"
@@ -39,8 +40,12 @@ type kopiApp struct {
 	node     *app.Node
 	started  time.Time
 	startErr error
-	flash    string // short-lived status override ("Clip too large…")
-	flashTil time.Time
+	writeErr error // can't write the log/config folder (e.g. blocked by antivirus)
+	// translocated: macOS runs a quarantined download from a temporary copy; start at
+	// login and permissions get confused until the quarantine flag is cleared.
+	translocated bool
+	flash        string // short-lived status override ("Clip too large…")
+	flashTil     time.Time
 
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -53,6 +58,7 @@ type kopiApp struct {
 	mPause     *systray.MenuItem
 	mSensitive *systray.MenuItem
 	mPass      *systray.MenuItem
+	mLogin     *systray.MenuItem
 	mQuit      *systray.MenuItem
 }
 
@@ -62,26 +68,39 @@ func runApp() {
 		showMessage("Kopi can't find your config folder: " + err.Error())
 		os.Exit(1)
 	}
-	setupLog(filepath.Dir(path))
-	a := &kopiApp{cfgPath: path, dirty: make(chan struct{}, 1)}
+	logErr := setupLog(filepath.Dir(path))
+	a := &kopiApp{cfgPath: path, dirty: make(chan struct{}, 1), writeErr: logErr}
+	if exe, err := autostart.Executable(); err == nil && autostart.Translocated(exe) {
+		a.translocated = true
+		log.Print("running from App Translocation (quarantined download)")
+	}
 	a.ctx, a.cancel = context.WithCancel(context.Background())
 	systray.Run(a.onReady, a.onExit)
 }
 
 // setupLog writes to kopi.log next to the config. Never logs clip text or passphrases.
-func setupLog(dir string) {
-	os.MkdirAll(dir, 0o700)
+// It returns an error if the log can't be written, so the tray can say so: an
+// antivirus blocking writes there would also stop settings from being saved.
+func setupLog(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.SetOutput(io.Discard)
+		return err
+	}
 	p := filepath.Join(dir, "kopi.log")
 	if st, err := os.Stat(p); err == nil && st.Size() > 1<<20 {
 		os.Rename(p, p+".old")
 	}
 	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err == nil {
+		_, err = fmt.Fprintf(f, "%s kopi %s starting (%s/%s)\n",
+			time.Now().Format("2006/01/02 15:04:05"), version, runtime.GOOS, runtime.GOARCH)
+	}
 	if err != nil {
 		log.SetOutput(io.Discard)
-		return
+		return err
 	}
 	log.SetOutput(f)
-	log.Printf("kopi %s starting (%s/%s)", version, runtime.GOOS, runtime.GOARCH)
+	return nil
 }
 
 func (a *kopiApp) onReady() {
@@ -104,9 +123,12 @@ func (a *kopiApp) onReady() {
 	}
 	systray.AddSeparator()
 	a.mPause = systray.AddMenuItemCheckbox("Pause sync", "Stop sending and receiving clips", false)
-	a.mSensitive = systray.AddMenuItemCheckbox("Include sensitive content",
-		"Also sync text that password managers mark as private", false)
+	// The sending device's setting decides whether a sensitive copy leaves it, so the
+	// label says "from this device" (rc1 testing: users toggled it on the receiver).
+	a.mSensitive = systray.AddMenuItemCheckbox("Send passwords copied on this device",
+		"Also sync text that password managers mark as private, when copied here", false)
 	a.mPass = systray.AddMenuItem("Set passphrase…", "The same passphrase must be set on every device")
+	a.mLogin = systray.AddMenuItemCheckbox("Start at login", "Start Kopi automatically when you log in", a.loginEnabled())
 	systray.AddSeparator()
 	a.mQuit = systray.AddMenuItem("Quit Kopi", "")
 
@@ -242,7 +264,7 @@ func (a *kopiApp) refresher() {
 
 func (a *kopiApp) redraw() {
 	a.mu.Lock()
-	n, startErr, started := a.node, a.startErr, a.started
+	n, startErr, started, writeErr := a.node, a.startErr, a.started, a.writeErr
 	flash := ""
 	if time.Now().Before(a.flashTil) {
 		flash = a.flash
@@ -258,6 +280,8 @@ func (a *kopiApp) redraw() {
 	switch {
 	case startErr != nil:
 		status = "Can't start — " + startErr.Error()
+	case writeErr != nil:
+		status = "Can't save settings — is antivirus blocking Kopi? (" + filepath.Dir(a.cfgPath) + ")"
 	case n == nil:
 		status = "Starting…"
 	case !n.Engine.HasKey():
@@ -268,6 +292,8 @@ func (a *kopiApp) redraw() {
 		status = flash
 	case len(peers) == 0 && time.Since(started) > noPeersHintAfter:
 		status = "No devices found — check firewall, or install Tailscale on both"
+	case a.translocated:
+		status = "Syncing, but running from a temporary copy — clear quarantine (see README)"
 	}
 	a.mStatus.SetTitle("Kopi — " + status)
 	systray.SetTooltip("Kopi — " + status)
@@ -336,11 +362,48 @@ func (a *kopiApp) clicks() {
 					a.setPassphraseFromTray()
 				}()
 			}
+		case <-a.mLogin.ClickedCh:
+			a.toggleLogin()
 		case <-a.mQuit.ClickedCh:
 			systray.Quit()
 			return
 		}
 	}
+}
+
+// loginEnabled reports whether this copy of Kopi starts at login.
+func (a *kopiApp) loginEnabled() bool {
+	exe, err := autostart.Executable()
+	if err != nil {
+		return false
+	}
+	on, err := autostart.Enabled(exe)
+	if err != nil {
+		log.Printf("start at login: %v", err)
+	}
+	return on
+}
+
+func (a *kopiApp) toggleLogin() {
+	exe, err := autostart.Executable()
+	if err == nil {
+		if a.mLogin.Checked() {
+			err = autostart.Disable()
+		} else {
+			err = autostart.Enable(exe)
+		}
+	}
+	if err != nil {
+		log.Printf("start at login: %v", err)
+		showMessage("Couldn't change Start at login: " + err.Error())
+	}
+	// Show what is actually configured, whatever happened.
+	if a.loginEnabled() {
+		a.mLogin.Check()
+	} else {
+		a.mLogin.Uncheck()
+	}
+	log.Printf("start_at_login=%v", a.mLogin.Checked())
 }
 
 func (a *kopiApp) setPassphraseFromTray() {
@@ -352,7 +415,9 @@ func (a *kopiApp) setPassphraseFromTray() {
 		showMessage("Passphrase not changed: " + err.Error())
 		return
 	}
-	a.updateConfig(func(c *config.Config) { c.Passphrase = p })
+	if err := a.updateConfig(func(c *config.Config) { c.Passphrase = p }); err != nil {
+		return // updateConfig already told the user why
+	}
 	a.applyPassphrase(p)
 	showMessage("Passphrase saved. Set the same passphrase on your other devices.")
 }
@@ -374,15 +439,23 @@ func (a *kopiApp) currentNode() *app.Node {
 
 // updateConfig changes and saves the config, remembering the new mtime so the
 // watcher doesn't treat our own write as an outside change.
-func (a *kopiApp) updateConfig(change func(*config.Config)) {
+func (a *kopiApp) updateConfig(change func(*config.Config)) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	change(&a.cfg)
-	if err := config.Save(a.cfgPath, a.cfg); err != nil {
+	err := config.Save(a.cfgPath, a.cfg)
+	if err != nil {
 		log.Printf("saving config: %v", err)
-		return
+		a.writeErr = err
+		go showMessage("Kopi couldn't save its settings: " + err.Error() +
+			"\n\nIf you use antivirus with ransomware protection, allow kopi.exe to write to " +
+			filepath.Dir(a.cfgPath))
+	} else {
+		a.writeErr = nil
+		a.cfgMtime = mtime(a.cfgPath)
 	}
-	a.cfgMtime = mtime(a.cfgPath)
+	go a.markDirty()
+	return err
 }
 
 // watchConfig applies changes made outside the app, e.g. by `kopi passphrase`.
