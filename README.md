@@ -88,7 +88,8 @@ turn **Kopi** on.
    - a status line (`Kopi — Syncing`, `Paused`, `Set a passphrase to start syncing`,
      or a hint if nothing was found),
    - **Devices**: your peers, each marked `connected`, `found`,
-     `passphrase mismatch` or `unreachable`,
+     `passphrase mismatch`, `unreachable` or `needs update` (v0.2),
+   - **Recent clips** — a submenu with the last clips this device synced (v0.2),
    - **Pause sync** — stop sending and receiving,
    - **Send passwords copied on this device** — off by default; it's the *copying*
      device's setting that decides,
@@ -107,6 +108,21 @@ If both devices are on the same Tailscale network (tailnet), Kopi finds them eve
 LAN discovery fails — it queries the `tailscale` CLI for online devices and says hello
 to each on port 47800. This also works when the two machines are on different
 networks. Nothing to configure in Kopi; install Tailscale and sign in on both devices.
+
+## Recent clips (v0.2)
+
+The **Recent clips** submenu lists the last 5 clips this device synced — sent or
+received — newest first; click one to put it back on your clipboard and sync it as a
+fresh copy (unless sync is paused: then only this device's clipboard changes). The
+list is **memory only**: it holds the last 5 entries, is never saved to disk or
+logged, and is empty after a restart (or after you change the passphrase). Clips
+marked as passwords/sensitive are never listed, even when they are sent.
+
+## Upgrading to v0.2
+
+Upgrade **every** device. v0.1 and v0.2 use different wire formats and will not
+exchange clips; a v0.2 device lists an older peer as `needs update`. Once all devices
+run v0.2, syncing and the Recent clips list work as normal.
 
 ## Troubleshooting
 
