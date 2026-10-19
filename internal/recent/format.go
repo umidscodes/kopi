@@ -40,11 +40,12 @@ func Preview(text string) string {
 const sourceSelfIDChars = 6
 
 // Source names the device a clip came from (RECENT-9): "this device" when the
-// clip was recorded on this device; otherwise the name stored with the entry
-// when the clip was recorded (ticket #7 decision 4 — no name lookup happens
-// here); failing that, the first 6 characters of the peer ID.
+// clip was recorded on this device (an empty selfID identifies nothing, so an
+// empty selfID never matches); otherwise the name stored with the entry when
+// the clip was recorded (ticket #7 decision 4 — no name lookup happens here);
+// failing that, the first 6 characters of the peer ID.
 func Source(from, name, selfID string) string {
-	if from == selfID {
+	if selfID != "" && from == selfID {
 		return "this device"
 	}
 	if name != "" {

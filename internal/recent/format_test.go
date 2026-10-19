@@ -1,8 +1,10 @@
 package recent
 
 import (
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // TestRECENT8_Preview covers SPEC.md [RECENT-8]: each line break ("\r\n" or "\n")
@@ -31,6 +33,21 @@ func TestRECENT8_Preview(t *testing.T) {
 			in:   "héllo 🌍 你好",
 			want: "héllo 🌍 你好",
 		},
+		{
+			name: "40 multi-byte characters shown in full",
+			in:   strings.Repeat("你", maxPreviewRunes),
+			want: strings.Repeat("你", maxPreviewRunes),
+		},
+		{
+			name: "41 emoji cut at 40 runes, valid UTF-8",
+			in:   strings.Repeat("🌍", maxPreviewRunes+1),
+			want: strings.Repeat("🌍", maxPreviewRunes) + "…",
+		},
+		{
+			name: "41 ASCII characters, truncated",
+			in:   strings.Repeat("0123456789", 4) + "0",
+			want: strings.Repeat("0123456789", 4) + "…",
+		},
 		{"tab becomes a space", "a\tb", "a b"},
 		{"all whitespace is blank", "  \n\t  ", "(blank)"},
 		{"empty string is blank", "", "(blank)"},
@@ -38,8 +55,12 @@ func TestRECENT8_Preview(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Preview(tc.in); got != tc.want {
+			got := Preview(tc.in)
+			if got != tc.want {
 				t.Errorf("Preview(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("Preview(%q) = %q, which is not valid UTF-8", tc.in, got)
 			}
 		})
 	}
@@ -62,6 +83,27 @@ func TestRECENT9_SourceLabel(t *testing.T) {
 		{"known peer name", "bbbb-2", "Mac", "aaaa-1", "Mac"},
 		{"unknown peer name falls back to ID prefix", "bbbb22cc-2", "", "aaaa-1", "bbbb22"},
 		{"short ID shown whole", "abc", "", "aaaa-1", "abc"},
+		{
+			name:   "multi-byte ID prefix uses runes",
+			from:   "日本語のID名前",
+			stored: "",
+			self:   "aaaa-1",
+			want:   "日本語のID",
+		},
+		{
+			name:   "empty selfID never labels this device",
+			from:   "",
+			stored: "",
+			self:   "",
+			want:   "",
+		},
+		{
+			name:   "empty selfID falls back to the ID",
+			from:   "bbbb-2",
+			stored: "",
+			self:   "",
+			want:   "bbbb-2",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
