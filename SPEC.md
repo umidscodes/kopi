@@ -192,15 +192,25 @@ Scenario: [SIZE-3] Exactly at the limit
 
 ```gherkin
 Scenario: [TRAY-1] Tray menu
-  Then the tray menu shows:
-    | Item                          |
-    | Status (Syncing / Paused / …) |
-    | Peers (list of device names)  |
-    | Recent clips (submenu, v0.2)  |
-    | Pause sync (toggle)           |
-    | Include sensitive content     |
-    | Set passphrase…               |
-    | Quit                          |
+  Then the tray menu shows, in this order:
+    | Item                                            | Kind                          |
+    | Kopi — <status> (Syncing / Paused / …)          | disabled status line          |
+    | Devices                                         | disabled heading              |
+    | <device name> — <peer state>, one per peer      | disabled, up to 8 lines       |
+    | Recent clips (v0.2)                             | submenu, see Feature: Recent clips |
+    | Pause sync                                      | checkbox                      |
+    | Send passwords copied on this device            | checkbox                      |
+    | Set passphrase…                                 | opens a dialog                |
+    | Start at login                                  | checkbox                      |
+    | Quit Kopi                                       | item                          |
+  And when no peer is known, the device list shows "No other devices found yet"
+  And <peer state> is one of:
+    | Peer state          | Meaning                                                    |
+    | found               | discovered, no message exchanged yet                       |
+    | connected           | clips sync with this peer                                  |
+    | passphrase mismatch | the peer uses a different passphrase (SEC-1)               |
+    | unreachable         | the peer was found but cannot be connected to              |
+    | needs update        | the peer runs a different Kopi protocol version (v0.2)     |
 
 Scenario: [TRAY-2] Pausing stops both directions
   Given sync is paused on A
@@ -364,27 +374,33 @@ Scenario: [RECENT-19] Sensitive clips are never listed on the receiving device
   Then within 1 second B's clipboard contains it
   And it is not in B's "Recent clips"
 
-Scenario: [RECENT-20] v0.1 peers keep syncing with v0.2 devices
+Scenario: [RECENT-20] v0.1 and v0.2 devices do not exchange clips
   Given A runs v0.2 and B runs v0.1, with the same passphrase
-  When I copy "to old" on A, and later "from old" on B
-  Then B's clipboard contains "to old" and A's clipboard contains "from old"
-  And A's "Recent clips" lists "from old", then "to old"
+  And A's clipboard contains "a-before" and B's clipboard contains "b-before"
+  When I copy "to old" on A
+  Then 5 seconds later B's clipboard still contains "b-before"
+  When I copy "from old" on B
+  Then 5 seconds later A's clipboard still contains "to old"
+  And "from old" is not in A's "Recent clips"
 
-Scenario: [RECENT-21] Sensitive clips from a v0.2 device still reach v0.1 peers
-  Given A runs v0.2 with "Send passwords copied on this device" on
-  And B runs v0.1 with the same passphrase
-  When I copy a password from a password manager on A
-  Then B's clipboard contains it (SENS-2 is unchanged for v0.1 peers)
-  And it is not in A's "Recent clips"
+Scenario: [RECENT-21] A v0.2 device shows a v0.1 peer as "needs update"
+  Given A runs v0.2 and B runs v0.1, on the same LAN
+  When both are started
+  Then within 10 seconds A's tray lists B as "<B's name> — needs update"
+  And A never lists B as "passphrase mismatch" or "unreachable" while B is running
+  And this holds whether or not A and B use the same passphrase
+  # Over the tailnet only (no mDNS), the limit is 20 seconds, as in DISC-4.
 
-Scenario: [RECENT-22] Clips from v0.1 peers are treated as not sensitive
-  Given A runs v0.2 and B runs v0.1 with its sensitive setting on
-  When I copy a password from a password manager on B
-  Then A's clipboard contains it
-  And it is listed in A's "Recent clips"
-  # Known limitation: a v0.1 device cannot say a clip was sensitive. Upgrade every
-  # device to v0.2 to keep passwords off every Recent clips list.
+Scenario: [RECENT-22] Sensitive-content rules are unchanged between v0.2 devices
+  Given A and B both run v0.2
+  Then SENS-1 and SENS-2 pass unchanged between A and B
 ```
+
+v0.2 uses a new message format (protocol version 2) that carries a "sensitive" flag, so a
+receiver knows not to list a sensitive clip (RECENT-19). v0.1 and v0.2 cannot exchange
+clips: upgrade every device together. Whatever a v0.1 device shows for a v0.2 peer is
+v0.1's already-shipped behaviour and is out of scope, except that the v0.2 device must
+never apply a clip from it or send it any clip text it can apply.
 
 Restoring and loops: SYNC-4 forbids a device from *automatically* re-sending a clip it
 just received. Clicking a Recent clips entry is a deliberate new copy by the user, so it
@@ -404,6 +420,9 @@ written to disk or to the log (log sizes and hashes only).
 - Showing the full clip text (e.g. as a tooltip or preview window).
 - Listing clips copied locally that did not sync.
 - Images, files or rich text (still plain text only).
+- Syncing between devices on different versions (v0.1 with v0.2). Every device must
+  run v0.2; mixed versions show "needs update" on the v0.2 side and do not sync.
+- Changing what an already-installed v0.1 device shows or does.
 
 ### Feature: Configuration
 
