@@ -151,12 +151,12 @@ Scenario: [SEC-4] No passphrase means no sync
 
 ```gherkin
 Scenario: [SENS-1] Sensitive clips are skipped by default
-  Given "Include sensitive content" is off (default)
+  Given "Send passwords copied on this device" is off (default)
   When I copy a password from a password manager on A
   Then nothing is sent to any peer
 
 Scenario: [SENS-2] Sensitive clips can be opted in
-  Given "Include sensitive content" is on
+  Given "Send passwords copied on this device" is on
   When I copy a password from a password manager on A
   Then B receives it
 ```
