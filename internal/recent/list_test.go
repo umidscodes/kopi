@@ -179,3 +179,43 @@ func TestRECENT_ConcurrentRecordEntriesClear(t *testing.T) {
 		t.Fatalf("list exceeded max size: %d", n)
 	}
 }
+
+// NameOf must be called before Record takes the list lock, so a resolver
+// that re-enters the list (or takes its own lock) cannot deadlock.
+func TestRECENT_NameOfCalledOutsideLock(t *testing.T) {
+	var l List
+	l.NameOf = func(id string) string {
+		l.Entries() // would deadlock if Record held l.mu here
+		return "n"
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		l.Record("x", "a", time.Now())
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Record is calling NameOf while holding the list lock: re-entrant NameOf deadlocked")
+	}
+}
+
+// [RECENT-3] When a clip falls off the end, its text must be zeroed in the
+// backing array, not just unlisted (the evicted clip could be a password).
+func TestRECENT3_EvictedTextNotRetained(t *testing.T) {
+	var l List
+	t0 := time.Now()
+	for i, text := range []string{"c1", "c2", "c3", "c4", "c5", "c6"} {
+		l.Record(text, "me", t0.Add(time.Duration(i)*time.Second))
+	}
+	if len(l.e) != MaxEntries {
+		t.Fatalf("setup: expected %d entries, got %d", MaxEntries, len(l.e))
+	}
+	// Every slot past the length (reachable via cap, same backing array)
+	// must hold the zero Entry; the old code left c1 at index MaxEntries.
+	for i := len(l.e); i < cap(l.e); i++ {
+		if l.e[:cap(l.e)][i] != (Entry{}) {
+			t.Fatalf("evicted entry still reachable at index %d: %+v", i, l.e[:cap(l.e)][i])
+		}
+	}
+}

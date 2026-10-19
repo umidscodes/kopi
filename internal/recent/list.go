@@ -28,7 +28,8 @@ type Entry struct {
 // concurrent use.
 type List struct {
 	// NameOf maps a device ID to its display name; "" when unknown. Set
-	// once by the creator before use; Record reads it under mu.
+	// once by the creator before use, and before the list is shared with
+	// other goroutines; Record reads it without holding mu.
 	NameOf func(id string) string
 
 	mu sync.Mutex
@@ -40,15 +41,19 @@ type List struct {
 // and time (RECENT-4). The oldest entry falls off beyond MaxEntries
 // (RECENT-3). The signature matches the sync.Recorder interface (#11).
 func (l *List) Record(text, from string, at time.Time) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	// Resolve the name before taking mu: a NameOf implementation that
+	// takes its own lock (e.g. a discovery-cache lookup) must never be
+	// called while we hold it, or list↔discovery lock order can deadlock.
 	name := ""
 	if l.NameOf != nil {
 		name = l.NameOf(from)
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.e = slices.DeleteFunc(l.e, func(en Entry) bool { return en.Text == text })
 	l.e = slices.Insert(l.e, 0, Entry{Text: text, From: from, Name: name, At: at})
 	if len(l.e) > MaxEntries {
+		clear(l.e[MaxEntries:]) // don't keep the evicted clip's text reachable
 		l.e = l.e[:MaxEntries]
 	}
 }
