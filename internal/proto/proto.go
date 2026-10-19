@@ -5,9 +5,14 @@
 //
 //	version (1) | nonce (24) | XChaCha20-Poly1305 ciphertext of the encoded Message
 //
+// The version byte is Version (2) and is authenticated as additional data. Open
+// rejects any other version (including v0.1's 1) with ErrBadVersion before decrypting.
+//
 // Encoded Message layout (inside the ciphertext, big endian):
 //
-//	id (16) | sentAt unix ms (8) | len(from) (1) | from | text
+//	id (16) | sentAt unix ms (8) | flags (1) | len(from) (1) | from | text
+//
+// flags: bit 0 = sensitive. Unused bits are written as zero and ignored on Open.
 package proto
 
 import (
@@ -28,8 +33,13 @@ const (
 	// MaxFromBytes caps the sender device ID.
 	MaxFromBytes = 255
 
-	version     = 1
-	headerLen   = 16 + 8 + 1
+	// Version is the protocol version, the first byte of every sealed message.
+	// v0.1 used 1; version 2 adds the flags byte. The two cannot exchange messages.
+	Version = 2
+
+	flagSensitive = 1 << 0
+
+	headerLen   = 16 + 8 + 1 + 1
 	sealedExtra = 1 + chacha20poly1305.NonceSizeX + chacha20poly1305.Overhead
 	// MaxFrameBytes is the largest frame on the wire: a max-size clip plus all overhead.
 	MaxFrameBytes = MaxTextBytes + headerLen + MaxFromBytes + sealedExtra
@@ -63,6 +73,8 @@ type Message struct {
 	From   string // sender device ID
 	SentAt time.Time
 	Text   string
+	// Sensitive marks a clip the receiver must never list (SPEC.md RECENT-19).
+	Sensitive bool
 }
 
 // NewID returns a random message ID.
@@ -85,7 +97,11 @@ func Seal(key Key, m Message) ([]byte, error) {
 	plain := make([]byte, 0, headerLen+len(m.From)+len(m.Text))
 	plain = append(plain, m.ID[:]...)
 	plain = binary.BigEndian.AppendUint64(plain, uint64(m.SentAt.UnixMilli()))
-	plain = append(plain, byte(len(m.From)))
+	var flags byte
+	if m.Sensitive {
+		flags |= flagSensitive
+	}
+	plain = append(plain, flags, byte(len(m.From)))
 	plain = append(plain, m.From...)
 	plain = append(plain, m.Text...)
 
@@ -94,7 +110,7 @@ func Seal(key Key, m Message) ([]byte, error) {
 		return nil, err
 	}
 	out := make([]byte, 1+aead.NonceSize(), sealedExtra+len(plain))
-	out[0] = version
+	out[0] = Version
 	if _, err := rand.Read(out[1:]); err != nil {
 		return nil, err
 	}
@@ -108,7 +124,7 @@ func Open(key Key, sealed []byte) (Message, error) {
 	if len(sealed) < sealedExtra {
 		return Message{}, ErrMalformed
 	}
-	if sealed[0] != version {
+	if sealed[0] != Version {
 		return Message{}, ErrBadVersion
 	}
 	aead, err := chacha20poly1305.NewX(key[:])
@@ -126,7 +142,8 @@ func Open(key Key, sealed []byte) (Message, error) {
 	var m Message
 	copy(m.ID[:], plain[:16])
 	m.SentAt = time.UnixMilli(int64(binary.BigEndian.Uint64(plain[16:24])))
-	fromLen := int(plain[24])
+	m.Sensitive = plain[24]&flagSensitive != 0
+	fromLen := int(plain[25])
 	rest := plain[headerLen:]
 	if len(rest) < fromLen {
 		return Message{}, ErrMalformed
