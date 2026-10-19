@@ -321,6 +321,7 @@ func peerLabel(p transport.PeerStatus) string {
 		transport.StateOK:          "connected",
 		transport.StateMismatch:    "passphrase mismatch",
 		transport.StateUnreachable: "unreachable",
+		transport.StateNeedsUpdate: "needs update",
 	}[p.State]
 	return name + " — " + state
 }
