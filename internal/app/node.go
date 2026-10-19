@@ -53,8 +53,11 @@ func Start(ctx context.Context, o Options) (*Node, error) {
 	})
 	srv, err := transport.Listen(o.ListenAddr, func(remote netip.Addr, sealed []byte) error {
 		err := eng.Receive(sealed)
-		if errors.Is(err, proto.ErrDecrypt) {
+		switch {
+		case errors.Is(err, proto.ErrDecrypt):
 			hub.MarkMismatchFrom(remote)
+		case errors.Is(err, proto.ErrBadVersion):
+			hub.MarkNeedsUpdateFrom(remote) // RECENT-20: not applied
 		}
 		return err
 	})
