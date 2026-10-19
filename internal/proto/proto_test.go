@@ -2,12 +2,15 @@ package proto
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 var (
@@ -207,5 +210,102 @@ func TestSEC3_ReplayRejectedForWholeFreshnessWindow(t *testing.T) {
 		if err := g.Check(m); err == nil {
 			t.Fatalf("replay accepted %v after first delivery", time.Duration(step+1)*30*time.Second)
 		}
+	}
+}
+
+// sealRaw encrypts plain exactly as a sender of the given protocol version would,
+// authenticating the version byte. Tests use it to build frames Seal won't produce.
+func sealRaw(t *testing.T, key Key, ver byte, plain []byte) []byte {
+	t.Helper()
+	aead, err := chacha20poly1305.NewX(key[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]byte, 1+aead.NonceSize())
+	out[0] = ver
+	if _, err := rand.Read(out[1:]); err != nil {
+		t.Fatal(err)
+	}
+	return aead.Seal(out, out[1:], plain, out[:1])
+}
+
+// v2Plain encodes m in the v2 layout with an explicit flags byte.
+func v2Plain(m Message, flags byte) []byte {
+	p := append([]byte{}, m.ID[:]...)
+	p = binary.BigEndian.AppendUint64(p, uint64(m.SentAt.UnixMilli()))
+	p = append(p, flags, byte(len(m.From)))
+	p = append(p, m.From...)
+	return append(p, m.Text...)
+}
+
+func TestRECENT19_SensitiveFlagRoundTrips(t *testing.T) {
+	for _, sensitive := range []bool{true, false} {
+		in := msg("hunter2")
+		in.Sensitive = sensitive
+		sealed, err := Seal(keyA, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sealed[0] != Version || Version != 2 {
+			t.Fatalf("first byte = %d, Version = %d; want 2", sealed[0], Version)
+		}
+		out, err := Open(keyA, sealed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Sensitive != sensitive || out.ID != in.ID || out.From != in.From ||
+			!out.SentAt.Equal(in.SentAt) || out.Text != in.Text {
+			t.Fatalf("round trip mismatch:\n got %+v\nwant %+v", out, in)
+		}
+	}
+}
+
+func TestRECENT19_UnusedFlagBitsIgnored(t *testing.T) {
+	in := msg("x")
+	for _, flags := range []byte{0xFE, 0xFF} {
+		out, err := Open(keyA, sealRaw(t, keyA, Version, v2Plain(in, flags)))
+		if err != nil {
+			t.Fatalf("flags %#x: %v", flags, err)
+		}
+		if want := flags&1 == 1; out.Sensitive != want || out.Text != "x" || out.From != in.From {
+			t.Fatalf("flags %#x: got %+v", flags, out)
+		}
+	}
+}
+
+func TestRECENT20_Version1FrameRejected(t *testing.T) {
+	// v0.1 layout: id (16) | sentAt (8) | len(from) (1) | from | text, version byte 1.
+	in := msg("from old")
+	plain := append([]byte{}, in.ID[:]...)
+	plain = binary.BigEndian.AppendUint64(plain, uint64(in.SentAt.UnixMilli()))
+	plain = append(plain, byte(len(in.From)))
+	plain = append(plain, in.From...)
+	plain = append(plain, in.Text...)
+	if _, err := Open(keyA, sealRaw(t, keyA, 1, plain)); !errors.Is(err, ErrBadVersion) {
+		t.Fatalf("v1 frame with same key: got %v, want ErrBadVersion", err)
+	}
+	// Any other version is rejected before decrypting, whatever the key.
+	for _, ver := range []byte{0, 1, 3, 255} {
+		for _, k := range []Key{keyA, keyB} {
+			if _, err := Open(keyA, sealRaw(t, k, ver, v2Plain(in, 0))); !errors.Is(err, ErrBadVersion) {
+				t.Fatalf("version %d: got %v, want ErrBadVersion", ver, err)
+			}
+		}
+	}
+}
+
+func TestRECENT22_SensitiveFlagIsAuthenticated(t *testing.T) {
+	in := msg("hunter2")
+	in.Sensitive = true
+	sealed, err := Seal(keyA, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The flags byte sits after id (16) and sentAt (8) in the plaintext; the stream
+	// cipher keeps offsets, so flip its bit 0 in the ciphertext.
+	flagAt := 1 + chacha20poly1305.NonceSizeX + 16 + 8
+	sealed[flagAt] ^= 1
+	if _, err := Open(keyA, sealed); !errors.Is(err, ErrDecrypt) {
+		t.Fatalf("tampered flag: got %v, want ErrDecrypt", err)
 	}
 }
