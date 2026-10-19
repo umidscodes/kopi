@@ -121,6 +121,10 @@ touch is an interface, so the whole sync behavior is testable in CI with fakes.
   bypass, troubleshooting with `kopiping`, building from source. **Owner: Qwen**
 - `TESTPLAN.md`: manual release checklist from SPEC.md + Known risks. **Owner: Claude**;
   run against the released build and signed off by **you** before tagging `v0.1.0`.
+- Status: done. Three release candidates: rc1 → rc2 (Windows dialog behind windows) →
+  rc3 (retry after wake, translocation-proof login item, per-device sensitive label,
+  exact size test data). All 22 cases + setup passed on rc3; released as `v0.1.0`.
+  Results and notes are in TESTPLAN.md.
 
 ## Resolved questions
 

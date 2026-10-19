@@ -117,7 +117,7 @@ networks. Nothing to configure in Kopi; install Tailscale and sign in on both de
 | "unreachable" | A device is announced but its port is blocked. From the other machine: `go run ./tools/kopiping <ip>:47800` — OK with a name means it's reachable. |
 | Passphrase dialog doesn't appear | Only one dialog at a time; check other windows. Or run `kopi passphrase` in a terminal. |
 | A clip didn't arrive | Sync paused? Was it marked sensitive (skipped unless the *copying* device allows it)? Over 15 MB? Is the other device's Kopi running? Right after waking from sleep Kopi retries for ~30 s. |
-| Settings don't stick (Windows) | Antivirus sandboxing (e.g. AVG CyberCapture / Sandbox) lets Kopi run but throws away what it saves. Exclude `kopi.exe` from the sandbox and add it to the exceptions. |
+| Kopi vanishes shortly after starting, or settings don't stick (Windows) | Antivirus may auto-sandbox the unsigned `kopi.exe` and then terminate it (AVG: see `C:\ProgramData\AVG\Antivirus\log\autosandbox.log`). Add the Kopi folder to the antivirus exceptions and restart Kopi. To check what Kopi really saved, open `%APPDATA%\kopi\kopi.yml` in Notepad. |
 | Tray says "running from a temporary copy" (macOS) | Run `xattr -dr com.apple.quarantine ~/Applications/Kopi.app` and reopen Kopi. |
 
 Logs: `%APPDATA%\kopi\kopi.log` (Windows), `~/Library/Application Support/kopi/kopi.log`

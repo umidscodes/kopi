@@ -49,7 +49,27 @@ with a note, and file a GitHub issue for every Fail (title starts with the case 
 | T21 | Risk | Fresh Mac install | Deny Local Network on first launch | Mac finds no LAN peers but still finds PC via tailnet; no crash |
 | T22 | — | Synced pair | Check both `kopi.log` files after the run | No clip text or passphrase anywhere in the logs |
 
-## Results — vX.Y.Z
+## Results — v0.1.0 (tested on v0.1.0-rc3, 2026-10-18)
+
+Windows 11 PC (AVG antivirus) and MacBook Pro (macOS 27.2, Apple Silicon), Tailscale on both.
+
+| ID | Result | Notes |
+|----|--------|-------|
+| S1–S7 | Pass | Mac: rc download unzipped as `Kopi-2.app` in Downloads and ran translocated until moved + `xattr`; rc3's tray warning caught it |
+| S5b | Pass | Windows: settings and Start at login persist (after an AVG exception — AVG Auto-Sandbox had sandboxed and terminated `kopi.exe` once) |
+| T01–T05 | Pass | |
+| T06 | Pass | Google Password Manager (Chrome) copies are marked private and were not sent. Failed on rc1: the PC still had the option on from earlier exploring, and the label didn't say it's per copying device (renamed) |
+| T07 | Pass | |
+| T08 | Pass | 15 728 641-byte clip never arrived (verified from the Mac log). Failed on rc1 only because the test data was exactly 15 MiB |
+| T08b | Pass | Exactly 15 728 640 bytes arrived |
+| T09–T16 | Pass | |
+| T17 | Pass | Failed on rc1/rc2: a clip copied during wake was dropped; rc3 retries for ~30 s |
+| T18 | Pass | Windows auto-started after a reboot; macOS via LaunchAgent by bundle ID |
+| T19–T22 | Pass | |
+
+**Sign-off:** owner (QA) · 2026-10-18 · build `v0.1.0-rc3` → released as `v0.1.0` · decision: **ship**
+
+## Results template — vX.Y.Z
 
 | ID | Windows → Mac | Mac → Windows | Notes / issue |
 |----|---------------|---------------|---------------|
