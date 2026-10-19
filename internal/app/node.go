@@ -54,7 +54,10 @@ func Start(ctx context.Context, o Options) (*Node, error) {
 	srv, err := transport.Listen(o.ListenAddr, func(remote netip.Addr, sealed []byte) error {
 		err := eng.Receive(sealed)
 		switch {
+		case err == nil:
+			hub.ClearNeedsUpdateFrom(remote) // it speaks our version now
 		case errors.Is(err, proto.ErrDecrypt):
+			hub.ClearNeedsUpdateFrom(remote) // our version, other passphrase
 			hub.MarkMismatchFrom(remote)
 		case errors.Is(err, proto.ErrBadVersion):
 			hub.MarkNeedsUpdateFrom(remote) // RECENT-20: not applied

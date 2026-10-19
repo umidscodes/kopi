@@ -38,6 +38,91 @@ func sealV1(t *testing.T, key proto.Key, from, text string) []byte {
 	return aead.Seal(out, out[1:], plain, out[:1])
 }
 
+// upgradingPeer is a device at 127.0.0.1 whose discovery reports no version. It
+// counts the frames it receives and can send A frames as v0.1 or v0.2.
+type upgradingPeer struct {
+	mu  sync.Mutex
+	got int
+}
+
+func (u *upgradingPeer) count() int { u.mu.Lock(); defer u.mu.Unlock(); return u.got }
+
+func startUpgradingPeer(t *testing.T, lan *discovery.FakeLAN, a *testNode) *upgradingPeer {
+	t.Helper()
+	u := &upgradingPeer{}
+	srv, err := transport.Listen("127.0.0.1:0", func(netip.Addr, []byte) error {
+		u.mu.Lock()
+		u.got++
+		u.mu.Unlock()
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go srv.Serve(ctx)
+	go lan.Join(transport.Peer{ID: "b", Name: "b",
+		Addrs: []netip.AddrPort{netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(srv.Port()))}}).Run(ctx, func(discovery.Event) {})
+	eventually(t, 2*time.Second, "A lists B", knows(a, "b"))
+
+	// B still runs v0.1 and copies something: A flags it.
+	sendToA(t, a, sealV1(t, keyAlpha, "b", "old clip"))
+	eventually(t, 2*time.Second, "B shown as needs update", func() bool {
+		s, _ := peerState(a, "b")
+		return s == transport.StateNeedsUpdate
+	})
+	return u
+}
+
+func sendToA(t *testing.T, a *testNode, frame []byte) {
+	t.Helper()
+	addrA := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(a.Port())).String()
+	transport.Send(context.Background(), addrA, frame)
+}
+
+func sealV2(t *testing.T, key proto.Key, from, text string) []byte {
+	t.Helper()
+	f, err := proto.Seal(key, proto.Message{ID: proto.NewID(), From: from, SentAt: time.Now(), Text: text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// B updates to v0.2 and restarts so fast that discovery never reports it gone.
+func TestRECENT21_UpgradedPeerRecoversAfterV2Frame(t *testing.T) {
+	lan := discovery.NewFakeLAN()
+	a := startNode(t, lan, "a", &keyAlpha)
+	b := startUpgradingPeer(t, lan, a)
+
+	sendToA(t, a, sealV2(t, keyAlpha, "b", "from upgraded"))
+	eventually(t, 2*time.Second, "A applies B's v2 clip", func() bool { return a.clip.Text() == "from upgraded" })
+	eventually(t, 2*time.Second, "B no longer needs update", func() bool {
+		s, _ := peerState(a, "b")
+		return s == transport.StateUnknown
+	})
+
+	a.clip.Copy("to upgraded", false)
+	eventually(t, 2*time.Second, "updated B receives A's clip", func() bool { return b.count() == 1 })
+	eventually(t, 2*time.Second, "B shown as connected", func() bool {
+		s, _ := peerState(a, "b")
+		return s == transport.StateOK
+	})
+}
+
+func TestRECENT21_UpgradedPeerWithOtherPassphraseShowsMismatch(t *testing.T) {
+	lan := discovery.NewFakeLAN()
+	a := startNode(t, lan, "a", &keyAlpha)
+	startUpgradingPeer(t, lan, a)
+
+	sendToA(t, a, sealV2(t, keyBravo, "b", "from upgraded"))
+	eventually(t, 2*time.Second, "B shown as passphrase mismatch", func() bool {
+		s, _ := peerState(a, "b")
+		return s == transport.StateMismatch
+	})
+}
+
 func TestRECENT20_OldVersionFrameNotAppliedAndPeerMarked(t *testing.T) {
 	lan := discovery.NewFakeLAN()
 	a := startNode(t, lan, "a", &keyAlpha)

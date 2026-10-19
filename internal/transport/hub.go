@@ -105,9 +105,13 @@ func (h *Hub) Upsert(p Peer) {
 		cur.Name = p.Name
 	}
 	if p.Version != 0 { // a sighting without a version keeps the one we know
+		wasOld := h.needsUpdate(cur)
 		cur.Version = p.Version
 		if p.Version == proto.Version {
 			delete(h.oldFrom, p.ID)
+		}
+		if wasOld && !h.needsUpdate(cur) {
+			cur.State = StateUnknown // what we learned before it updated is stale
 		}
 	}
 	for _, a := range p.Addrs {
@@ -207,6 +211,27 @@ func (h *Hub) MarkNeedsUpdateFrom(ip netip.Addr) {
 	}
 }
 
+// ClearNeedsUpdateFrom undoes MarkNeedsUpdateFrom for peers with this IP. Called
+// when a frame of our own version arrives from it (accepted, or undecryptable with
+// a different passphrase): the device there has updated. Peers that publish another
+// version through discovery keep it until discovery says otherwise.
+func (h *Hub) ClearNeedsUpdateFrom(ip netip.Addr) {
+	ip = ip.Unmap()
+	h.mu.Lock()
+	hit := false
+	for id, p := range h.peers {
+		if h.oldFrom[id] && p.Version == 0 && hasIP(p, ip) {
+			delete(h.oldFrom, id)
+			p.State = StateUnknown // what we learned before it updated is stale
+			hit = true
+		}
+	}
+	h.mu.Unlock()
+	if hit {
+		h.changed()
+	}
+}
+
 // needsUpdate reports whether p speaks another protocol version. h.mu must be held.
 func (h *Hub) needsUpdate(p *PeerStatus) bool {
 	return (p.Version != 0 && p.Version != proto.Version) || h.oldFrom[p.ID]
@@ -244,19 +269,23 @@ func (h *Hub) Broadcast(sealed []byte) {
 			continue // it can't read our clips: no send, no retries (RECENT-20)
 		}
 		h.wg.Add(1)
-		go func(p PeerStatus) {
+		go func(id string) {
 			defer h.wg.Done()
-			h.deliverWithRetry(p, sealed, gen)
-		}(p)
+			h.deliverWithRetry(id, sealed, gen)
+		}(p.ID)
 	}
 }
 
 // deliverWithRetry sends to one peer, retrying network failures (T17: copy right
 // after the other device wakes up) until it works, a newer clip supersedes this one,
-// the peer is removed, or the retries run out.
-func (h *Hub) deliverWithRetry(p PeerStatus, sealed []byte, gen uint64) {
+// the peer is removed or turns out to need an update, or the retries run out.
+func (h *Hub) deliverWithRetry(id string, sealed []byte, gen uint64) {
+	p, ok := h.target(id, gen, false)
+	if !ok {
+		return
+	}
 	s := h.deliver(p, sealed)
-	h.setState(p.ID, s)
+	h.setState(id, s)
 	for _, d := range h.RetryDelays {
 		if s != StateUnreachable {
 			return
@@ -266,23 +295,27 @@ func (h *Hub) deliverWithRetry(p PeerStatus, sealed []byte, gen uint64) {
 			return
 		case <-time.After(d):
 		}
-		h.mu.Lock()
-		cur, ok := h.peers[p.ID]
-		superseded := h.gen != gen
-		if ok && h.needsUpdate(cur) {
-			ok = false // learned meanwhile that it speaks another version
-		}
-		if ok {
-			p = *cur // pick up addresses learned meanwhile (e.g. Tailscale came back)
-			p.Addrs = slices.Clone(cur.Addrs)
-		}
-		h.mu.Unlock()
-		if !ok || superseded {
+		// Pick up addresses learned meanwhile (e.g. Tailscale came back).
+		if p, ok = h.target(id, gen, true); !ok {
 			return
 		}
 		s = h.deliver(p, sealed)
-		h.setState(p.ID, s)
+		h.setState(id, s)
 	}
+}
+
+// target returns the peer as it is now, or false if it was removed, needs an update
+// (RECENT-20: never send to it) or, for a retry, a newer clip superseded this one.
+func (h *Hub) target(id string, gen uint64, retry bool) (PeerStatus, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cur, ok := h.peers[id]
+	if !ok || h.needsUpdate(cur) || (retry && h.gen != gen) {
+		return PeerStatus{}, false
+	}
+	p := *cur
+	p.Addrs = slices.Clone(cur.Addrs)
+	return p, true
 }
 
 // Wait blocks until all in-flight broadcasts finish. Useful in tests and at shutdown.

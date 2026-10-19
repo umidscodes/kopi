@@ -127,3 +127,112 @@ func TestRECENT21_UnknownVersionPeerUsesNormalStates(t *testing.T) {
 		t.Fatalf("version-less peer after decrypt failure = %v, want mismatch", s)
 	}
 }
+
+// countingSend records every call and fails like a dead network while err is set.
+type countingSend struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (c *countingSend) send(context.Context, string, []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	return c.err
+}
+
+func (c *countingSend) count() int { c.mu.Lock(); defer c.mu.Unlock(); return c.calls }
+
+func TestRECENT20_NoRetryOncePeerNeedsUpdate(t *testing.T) {
+	ip := netip.MustParseAddr("10.0.0.1")
+	f := &countingSend{err: errors.New("network down")}
+	h := transport.NewHub()
+	h.Send = f.send
+	h.RetryDelays = []time.Duration{100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond}
+	h.Upsert(transport.Peer{ID: "p", Name: "P", Addrs: []netip.AddrPort{netip.AddrPortFrom(ip, 47800)}})
+
+	h.Broadcast([]byte("x"))
+	deadline := time.Now().Add(2 * time.Second)
+	for f.count() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	// An old frame arrives from it while we wait to retry.
+	h.MarkNeedsUpdateFrom(ip)
+	h.Wait()
+	if n := f.count(); n != 1 {
+		t.Fatalf("Send called %d times, want 1 (no retries once the peer needs an update)", n)
+	}
+	if s := hubStates(h)["p"]; s != transport.StateNeedsUpdate {
+		t.Fatalf("state = %v, want needs update", s)
+	}
+}
+
+func TestRECENT21_ReceiveFlagClearedWhenPeerReportsOurVersion(t *testing.T) {
+	ip := netip.MustParseAddr("10.0.0.1")
+	h := transport.NewHub()
+	h.Upsert(transport.Peer{ID: "p", Name: "P", Addrs: []netip.AddrPort{netip.AddrPortFrom(ip, 47800)}})
+	h.MarkMismatchFrom(ip) // a verdict from before; stale once it updates
+	h.MarkNeedsUpdateFrom(ip)
+	if s := hubStates(h)["p"]; s != transport.StateNeedsUpdate {
+		t.Fatalf("after an old frame: %v, want needs update", s)
+	}
+	h.Upsert(transport.Peer{ID: "p", Version: proto.Version})
+	if s := hubStates(h)["p"]; s != transport.StateUnknown {
+		t.Fatalf("after reporting our version: %v, want unknown (found), not a stale verdict", s)
+	}
+}
+
+func TestRECENT21_MarkNeedsUpdateFromSparesPeerOnOurVersion(t *testing.T) {
+	ip := netip.MustParseAddr("10.0.0.1")
+	h := transport.NewHub()
+	h.Upsert(transport.Peer{ID: "new", Name: "New", Addrs: []netip.AddrPort{netip.AddrPortFrom(ip, 47800)}, Version: proto.Version})
+	h.Upsert(transport.Peer{ID: "quiet", Name: "Quiet", Addrs: []netip.AddrPort{netip.AddrPortFrom(ip, 47801)}})
+	h.MarkNeedsUpdateFrom(ip)
+	s := hubStates(h)
+	if s["new"] != transport.StateUnknown {
+		t.Fatalf("peer reporting our version = %v, want unknown (found)", s["new"])
+	}
+	if s["quiet"] != transport.StateNeedsUpdate {
+		t.Fatalf("version-less peer = %v, want needs update", s["quiet"])
+	}
+}
+
+func TestRECENT21_UpgradedPeerRecoversWithFreshState(t *testing.T) {
+	ip := netip.MustParseAddr("10.0.0.1")
+	f := &countingSend{err: errors.New("network down")}
+	h := transport.NewHub()
+	h.Send = f.send
+	h.RetryDelays = nil
+	h.Upsert(transport.Peer{ID: "p", Name: "P", Addrs: []netip.AddrPort{netip.AddrPortFrom(ip, 47800)}})
+	h.Broadcast([]byte("x"))
+	h.Wait() // stored state: unreachable
+	h.MarkNeedsUpdateFrom(ip)
+
+	h.ClearNeedsUpdateFrom(ip) // a frame of our version arrived from it
+	if s := hubStates(h)["p"]; s != transport.StateUnknown {
+		t.Fatalf("after it updated: %v, want unknown (found), not a stale verdict", s)
+	}
+	f.mu.Lock()
+	f.err = nil
+	f.mu.Unlock()
+	h.Broadcast([]byte("y"))
+	h.Wait()
+	if n := f.count(); n != 2 {
+		t.Fatalf("Send called %d times, want 2 (it gets clips again)", n)
+	}
+	h.MarkMismatchFrom(ip)
+	if s := hubStates(h)["p"]; s != transport.StateMismatch {
+		t.Fatalf("updated peer with another passphrase = %v, want mismatch", s)
+	}
+}
+
+func TestRECENT21_ClearNeedsUpdateFromKeepsDiscoveredOldVersion(t *testing.T) {
+	ip := netip.MustParseAddr("10.0.0.1")
+	h := transport.NewHub()
+	h.Upsert(transport.Peer{ID: "old", Name: "Old", Addrs: []netip.AddrPort{netip.AddrPortFrom(ip, 47800)}, Version: 1})
+	h.ClearNeedsUpdateFrom(ip)
+	if s := hubStates(h)["old"]; s != transport.StateNeedsUpdate {
+		t.Fatalf("peer publishing version 1 = %v, want needs update", s)
+	}
+}
