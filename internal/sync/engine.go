@@ -40,6 +40,15 @@ type Event struct {
 	Size int
 }
 
+// Recorder is notified of every clip this device actually synced, for the
+// "Recent clips" list. text is normalized ("\n" line endings), from is the device ID
+// of the sender, at is when this device sent or applied the clip (RECENT-10).
+// Sensitive clips are never passed to Record (RECENT-18, RECENT-19). Like OnEvent,
+// Record must not block and must not call back into the Engine.
+type Recorder interface {
+	Record(text, from string, at time.Time)
+}
+
 // Options configures an Engine.
 type Options struct {
 	DeviceID  string
@@ -52,6 +61,8 @@ type Options struct {
 	LineEnding string
 	// OnEvent, if set, is called for UI-relevant events. Must not block.
 	OnEvent func(Event)
+	// Recent, if set, records clips this device actually synced (nil = no list).
+	Recent Recorder
 	// Now and ReplayWindow are overridable for tests.
 	Now          func() time.Time
 	ReplayWindow time.Duration
@@ -179,7 +190,7 @@ func (e *Engine) HandleLocal(it clip.Item) {
 	if e.hasLast && !at.After(e.lastAt) {
 		at = e.lastAt.Add(time.Millisecond)
 	}
-	m := proto.Message{ID: proto.NewID(), From: e.opts.DeviceID, SentAt: at, Text: text}
+	m := proto.Message{ID: proto.NewID(), From: e.opts.DeviceID, SentAt: at, Text: text, Sensitive: it.Sensitive}
 	e.lastAt, e.lastFrom, e.hasLast = m.SentAt, m.From, true
 	key := *e.key
 	e.mu.Unlock()
@@ -189,6 +200,9 @@ func (e *Engine) HandleLocal(it clip.Item) {
 		return
 	}
 	e.opts.Network.Broadcast(sealed)
+	if !it.Sensitive {
+		e.record(text, e.opts.DeviceID, at)
+	}
 	e.emit(Event{Kind: EventSent, Size: len(text)})
 }
 
@@ -224,11 +238,15 @@ func (e *Engine) Receive(sealed []byte) error {
 	e.appliedHash = sha256.Sum256([]byte(text))
 	e.hasApplied = true
 	e.lastAt, e.lastFrom, e.hasLast = m.SentAt, m.From, true
+	write := text
 	if e.opts.LineEnding != "\n" {
-		text = strings.ReplaceAll(text, "\n", e.opts.LineEnding)
+		write = strings.ReplaceAll(text, "\n", e.opts.LineEnding)
 	}
-	if err := e.opts.Clipboard.Write(text); err != nil {
+	if err := e.opts.Clipboard.Write(write); err != nil {
 		return err
+	}
+	if !m.Sensitive {
+		e.record(text, m.From, e.opts.Now())
 	}
 	e.emit(Event{Kind: EventApplied, Size: len(text)})
 	return nil
@@ -237,6 +255,12 @@ func (e *Engine) Receive(sealed []byte) error {
 func (e *Engine) emit(ev Event) {
 	if e.opts.OnEvent != nil {
 		e.opts.OnEvent(ev)
+	}
+}
+
+func (e *Engine) record(text, from string, at time.Time) {
+	if e.opts.Recent != nil {
+		e.opts.Recent.Record(text, from, at)
 	}
 }
 
