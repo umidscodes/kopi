@@ -344,24 +344,61 @@ func (a *kopiApp) redrawRecent(n *app.Node, selfID string) {
 	if n != nil {
 		slots = recentMenu(n.Recent.Entries(), time.Now(), selfID)
 	}
+	st := recentMenuState(slots)
+	// Titles and the snapshot change together under mu, so a click always maps to the
+	// label that was on screen (a click takes mu before reading the snapshot).
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.recentDrawn = slots
-	a.mu.Unlock()
 	for i, m := range a.mRecentSlots {
-		if i < len(slots) {
+		if st.SlotVisible[i] {
 			m.SetTitle(slots[i].Label)
 			m.Show()
 		} else {
 			m.Hide()
 		}
 	}
-	if len(slots) == 0 {
+	if st.ShowNone {
 		a.mRecentNone.Show()
-		a.mRecentClear.Disable()
 	} else {
 		a.mRecentNone.Hide()
-		a.mRecentClear.Enable()
 	}
+	if st.ClearEnabled {
+		a.mRecentClear.Enable()
+	} else {
+		a.mRecentClear.Disable()
+	}
+}
+
+// restoreSlot restores the entry that slot i showed when the menu was last drawn
+// (RECENT-5). It reads the drawn snapshot, never the live list.
+func (a *kopiApp) restoreSlot(i int) {
+	a.mu.Lock()
+	text, ok := slotText(a.recentDrawn, i)
+	a.mu.Unlock()
+	n := a.currentNode()
+	if !ok || n == nil {
+		return
+	}
+	if err := n.Engine.Restore(text); err != nil {
+		log.Printf("restore recent slot %d (%d bytes): %v", i, len(text), err)
+	} else {
+		log.Printf("restored recent slot %d (%d bytes)", i, len(text))
+	}
+	a.markDirty()
+}
+
+// clearRecent empties this device's list and forgets the drawn snapshot, so a stale
+// click restores nothing; the clipboard is left alone (RECENT-12).
+func (a *kopiApp) clearRecent() {
+	a.mu.Lock()
+	a.recentDrawn = nil
+	a.mu.Unlock()
+	if n := a.currentNode(); n != nil {
+		n.Recent.Clear()
+		log.Print("recent clips cleared")
+	}
+	a.markDirty()
 }
 
 // watchRecentSlot restores the entry shown in slot i when it is clicked (RECENT-5).
@@ -371,19 +408,7 @@ func (a *kopiApp) watchRecentSlot(i int) {
 		case <-a.ctx.Done():
 			return
 		case <-a.mRecentSlots[i].ClickedCh:
-			a.mu.Lock()
-			text, ok := slotText(a.recentDrawn, i)
-			a.mu.Unlock()
-			n := a.currentNode()
-			if !ok || n == nil {
-				continue
-			}
-			if err := n.Engine.Restore(text); err != nil {
-				log.Printf("restore recent slot %d (%d bytes): %v", i, len(text), err)
-			} else {
-				log.Printf("restored recent slot %d (%d bytes)", i, len(text))
-			}
-			a.markDirty()
+			a.restoreSlot(i)
 		}
 	}
 }
@@ -395,11 +420,7 @@ func (a *kopiApp) watchRecentClear() {
 		case <-a.ctx.Done():
 			return
 		case <-a.mRecentClear.ClickedCh:
-			if n := a.currentNode(); n != nil {
-				n.Recent.Clear()
-				log.Print("recent clips cleared")
-			}
-			a.markDirty()
+			a.clearRecent()
 		}
 	}
 }
@@ -519,6 +540,9 @@ func (a *kopiApp) setPassphraseFromTray() {
 func (a *kopiApp) applyPassphrase(p string) {
 	if n := a.currentNode(); n != nil {
 		n.SetKey(keyFor(p)) // also empties Recent clips (RECENT-13)
+		a.mu.Lock()
+		a.recentDrawn = nil // a stale click must not restore a cleared clip
+		a.mu.Unlock()
 	}
 	log.Print("passphrase changed")
 	a.markDirty()

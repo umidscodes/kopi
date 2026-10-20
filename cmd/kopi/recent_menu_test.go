@@ -62,8 +62,6 @@ func TestRECENT5_SlotMapsToDrawnEntry(t *testing.T) {
 		{Text: "y", From: "self", At: menuNow},
 		{Text: long, From: "self", At: menuNow},
 	}, menuNow, "self")
-	// A clip arriving after the draw would shift a fresh read; the snapshot must not move.
-	_ = recentMenu([]recent.Entry{{Text: "new", From: "self", At: menuNow}, {Text: "y", From: "self", At: menuNow}}, menuNow, "self")
 
 	if text, ok := slotText(drawn, 1); !ok || text != long {
 		t.Fatalf("slot 1 = %q, %v; want the full long text", text, ok)

@@ -47,3 +47,22 @@ func slotText(slots []recentSlot, i int) (string, bool) {
 	}
 	return slots[i].Text, true
 }
+
+// recentState says what the submenu items look like for a drawn snapshot.
+type recentState struct {
+	SlotVisible  [recentSlots]bool
+	ShowNone     bool // the disabled "No recent clips" item
+	ClearEnabled bool
+}
+
+// recentMenuState decides which slots show, whether "No recent clips" shows and whether
+// Clear is enabled (RECENT-11). Pure, so it is testable without a GUI.
+func recentMenuState(slots []recentSlot) recentState {
+	var st recentState
+	for i := range st.SlotVisible {
+		st.SlotVisible[i] = i < len(slots)
+	}
+	st.ShowNone = len(slots) == 0
+	st.ClearEnabled = len(slots) > 0
+	return st
+}
