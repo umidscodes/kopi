@@ -1153,6 +1153,60 @@ func TestRECENT7_RestoreWhilePausedIsLocalOnly(t *testing.T) {
 	}
 }
 
+func TestRECENT7_PausedRestoreOfReceivedClipIsThisDevice(t *testing.T) {
+	t0 := time.UnixMilli(1_790_000_000_000)
+	ck := &stepClock{cur: t0}
+	n := newNet()
+	recA := &fakeRec{}
+	a := n.add(t, "a", clock(ck.now), withRecent(recA))
+	b := n.add(t, "b", clock(ck.now))
+	b.engine.HandleLocal(clip.Item{Text: "x"}) // A applies it, listed from B
+	a.engine.SetPaused(true)
+	later := t0.Add(3 * time.Second)
+	ck.set(later)
+	if err := a.engine.Restore("x"); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := recA.entries(); len(got) != 2 || got[1] != (recEntry{"x", "a", later}) {
+		t.Errorf("A recorded %+v, want second entry {x a %v}", got, later)
+	}
+	if got := a.sentCount(); got != 0 {
+		t.Errorf("paused A sent %d, want 0", got)
+	}
+}
+
+// Human decision at gate 3 (2026-10-19): no passphrase wins over paused. The restore
+// writes the clipboard only; nothing is recorded or sent (SEC-4, RECENT-16).
+func TestRECENT7_RestoreWhilePausedWithoutPassphraseRecordsNothing(t *testing.T) {
+	n := newNet()
+	rec := &fakeRec{}
+	a := n.add(t, "a", withKey(nil), withRecent(rec))
+	b := n.add(t, "b")
+	a.engine.SetPaused(true)
+	if err := a.engine.Restore("x"); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := a.clip.Text(); got != "x" {
+		t.Errorf("A clipboard = %q, want x", got)
+	}
+	if rec.count() != 0 {
+		t.Errorf("paused restore without passphrase recorded %d entries, want 0", rec.count())
+	}
+	if a.sentCount() != 0 || b.clip.Text() != "" {
+		t.Errorf("A sent: sent=%d Bclip=%q", a.sentCount(), b.clip.Text())
+	}
+	if !a.hasEvent(EventNoPassphrase) {
+		t.Error("no EventNoPassphrase emitted")
+	}
+	// Neither resuming nor setting a passphrase sends the restore's echo.
+	a.engine.SetPaused(false)
+	a.engine.SetKey(&keyAlpha)
+	a.engine.HandleLocal(clip.Item{Text: "x"})
+	if a.sentCount() != 0 {
+		t.Errorf("echo of the restore sent later: %d", a.sentCount())
+	}
+}
+
 func TestRECENT7_RestoreWithoutPassphraseIsLocalOnly(t *testing.T) {
 	n := newNet()
 	rec := &fakeRec{}

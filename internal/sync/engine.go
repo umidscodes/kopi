@@ -217,7 +217,7 @@ func (e *Engine) nextSentAt() time.Time {
 // (RECENT-5). It is sent once as a new clip, even when it is the clip just received
 // (RECENT-6); the clipboard change caused by its own Write is not sent again. While
 // paused it only writes the clipboard and records the entry (RECENT-7). Without a
-// passphrase it only writes the clipboard (SEC-4).
+// passphrase (paused or not) it only writes the clipboard (SEC-4).
 func (e *Engine) Restore(text string) error {
 	text = normalize(text)
 	write := text
@@ -238,13 +238,15 @@ func (e *Engine) Restore(text string) error {
 		return err
 	}
 	switch {
+	case e.key == nil:
+		// No passphrase wins over paused (gate 3 decision): nothing is recorded or
+		// sent (SEC-4, RECENT-16).
+		e.mu.Unlock()
+		e.emit(Event{Kind: EventNoPassphrase})
+		return nil
 	case e.paused:
 		e.mu.Unlock()
 		e.record(text, e.opts.DeviceID, e.opts.Now())
-		return nil
-	case e.key == nil:
-		e.mu.Unlock()
-		e.emit(Event{Kind: EventNoPassphrase})
 		return nil
 	case len(text) > proto.MaxTextBytes:
 		e.mu.Unlock()
