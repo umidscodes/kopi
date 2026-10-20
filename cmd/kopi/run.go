@@ -52,8 +52,12 @@ type kopiApp struct {
 	dirty      chan struct{}
 	dialogOpen atomic.Bool
 
-	// recentDrawn is the snapshot the Recent clips submenu was last drawn from (guarded
-	// by mu). A slot click restores from it, never from a fresh read of the list (RECENT-5).
+	// recentDrawn is the snapshot the Recent clips submenu was last drawn from, guarded
+	// by recentMu. A slot click restores from it, never from a fresh read of the list
+	// (RECENT-5). recentMu is a leaf lock: hold it only to read or write the field, never
+	// across a systray call or a call into the node or engine (on macOS systray calls
+	// block on the main thread, which onExit shares).
+	recentMu    gosync.Mutex
 	recentDrawn []recentSlot
 
 	mStatus      *systray.MenuItem
@@ -337,45 +341,40 @@ func (a *kopiApp) redraw() {
 	}
 }
 
-// redrawRecent draws the Recent clips submenu from the node's list and remembers the
-// snapshot it drew. It runs from the refresher, never from an engine callback.
-func (a *kopiApp) redrawRecent(n *app.Node, selfID string) {
+// snapshotRecent reads the node's list, builds the slots and stores them as the drawn
+// snapshot. No GUI and no lock is held while the list is read; recentMu is held only
+// for the store.
+func (a *kopiApp) snapshotRecent(n *app.Node, selfID string) []recentSlot {
 	var slots []recentSlot
 	if n != nil {
 		slots = recentMenu(n.Recent.Entries(), time.Now(), selfID)
 	}
-	st := recentMenuState(slots)
-	// Titles and the snapshot change together under mu, so a click always maps to the
-	// label that was on screen (a click takes mu before reading the snapshot).
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.recentMu.Lock()
 	a.recentDrawn = slots
+	a.recentMu.Unlock()
+	return slots
+}
+
+// redrawRecent draws the Recent clips submenu. It runs from the refresher, never from
+// an engine callback, and holds no lock across the systray calls. The snapshot is
+// stored just before the titles are applied, so a click that lands in between can
+// still map to the previous labels; this repaints the items but does not promise that
+// a menu the user already has open shows the new titles.
+func (a *kopiApp) redrawRecent(n *app.Node, selfID string) {
+	slots := a.snapshotRecent(n, selfID)
+	var items [recentSlots]menuItem
 	for i, m := range a.mRecentSlots {
-		if st.SlotVisible[i] {
-			m.SetTitle(slots[i].Label)
-			m.Show()
-		} else {
-			m.Hide()
-		}
+		items[i] = m
 	}
-	if st.ShowNone {
-		a.mRecentNone.Show()
-	} else {
-		a.mRecentNone.Hide()
-	}
-	if st.ClearEnabled {
-		a.mRecentClear.Enable()
-	} else {
-		a.mRecentClear.Disable()
-	}
+	applyRecentMenu(slots, recentMenuState(slots), items, a.mRecentNone, a.mRecentClear)
 }
 
 // restoreSlot restores the entry that slot i showed when the menu was last drawn
 // (RECENT-5). It reads the drawn snapshot, never the live list.
 func (a *kopiApp) restoreSlot(i int) {
-	a.mu.Lock()
+	a.recentMu.Lock()
 	text, ok := slotText(a.recentDrawn, i)
-	a.mu.Unlock()
+	a.recentMu.Unlock()
 	n := a.currentNode()
 	if !ok || n == nil {
 		return
@@ -391,9 +390,9 @@ func (a *kopiApp) restoreSlot(i int) {
 // clearRecent empties this device's list and forgets the drawn snapshot, so a stale
 // click restores nothing; the clipboard is left alone (RECENT-12).
 func (a *kopiApp) clearRecent() {
-	a.mu.Lock()
+	a.recentMu.Lock()
 	a.recentDrawn = nil
-	a.mu.Unlock()
+	a.recentMu.Unlock()
 	if n := a.currentNode(); n != nil {
 		n.Recent.Clear()
 		log.Print("recent clips cleared")
@@ -540,9 +539,9 @@ func (a *kopiApp) setPassphraseFromTray() {
 func (a *kopiApp) applyPassphrase(p string) {
 	if n := a.currentNode(); n != nil {
 		n.SetKey(keyFor(p)) // also empties Recent clips (RECENT-13)
-		a.mu.Lock()
+		a.recentMu.Lock()
 		a.recentDrawn = nil // a stale click must not restore a cleared clip
-		a.mu.Unlock()
+		a.recentMu.Unlock()
 	}
 	log.Print("passphrase changed")
 	a.markDirty()

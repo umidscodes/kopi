@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/umidscodes/kopi/internal/app"
 	"github.com/umidscodes/kopi/internal/clip"
@@ -28,9 +27,16 @@ func newMenuNode(t *testing.T) (*kopiApp, *app.Node, *clip.Fake) {
 	return &kopiApp{node: n}, n, cb
 }
 
-// drawForTest mimics the snapshot step of redrawRecent (its systray calls need a GUI).
+// drawForTest runs the real snapshot step of redrawRecent (only its systray calls,
+// which need a GUI, are skipped).
 func drawForTest(a *kopiApp, n *app.Node) {
-	a.recentDrawn = recentMenu(n.Recent.Entries(), time.Now(), "self")
+	a.snapshotRecent(n, "self")
+}
+
+func (a *kopiApp) drawnForTest() []recentSlot {
+	a.recentMu.Lock()
+	defer a.recentMu.Unlock()
+	return a.recentDrawn
 }
 
 // RECENT-5: a clip arriving after the menu was drawn must not shift the click target.
@@ -56,8 +62,8 @@ func TestRECENT12_ClearEmptiesListAndKeepsClipboard(t *testing.T) {
 	}
 	writes := cb.Writes()
 	drawForTest(a, n)
-	if len(a.recentDrawn) != 1 {
-		t.Fatalf("drawn = %+v, want [x]", a.recentDrawn)
+	if d := a.drawnForTest(); len(d) != 1 || d[0].Text != "x" {
+		t.Fatalf("drawn = %+v, want [x]", d)
 	}
 
 	a.clearRecent()

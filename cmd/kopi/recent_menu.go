@@ -48,6 +48,39 @@ func slotText(slots []recentSlot, i int) (string, bool) {
 	return slots[i].Text, true
 }
 
+// menuItem is the part of *systray.MenuItem the Recent clips submenu uses, so applying
+// a state can be tested with a fake.
+type menuItem interface {
+	SetTitle(string)
+	Show()
+	Hide()
+	Enable()
+	Disable()
+}
+
+// applyRecentMenu applies the drawn slots and their state to the submenu items. It
+// takes no lock; the caller must not hold one (systray calls can block on macOS).
+func applyRecentMenu(slots []recentSlot, st recentState, items [recentSlots]menuItem, none, clear menuItem) {
+	for i, m := range items {
+		if st.SlotVisible[i] {
+			m.SetTitle(slots[i].Label)
+			m.Show()
+		} else {
+			m.Hide()
+		}
+	}
+	if st.ShowNone {
+		none.Show()
+	} else {
+		none.Hide()
+	}
+	if st.ClearEnabled {
+		clear.Enable()
+	} else {
+		clear.Disable()
+	}
+}
+
 // recentState says what the submenu items look like for a drawn snapshot.
 type recentState struct {
 	SlotVisible  [recentSlots]bool
