@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/umidscodes/kopi/internal/proto"
 	"github.com/umidscodes/kopi/internal/transport"
 )
 
@@ -119,6 +120,96 @@ func TestTailnetIgnoresItself(t *testing.T) {
 	ts.Run(ctx, log.emit)
 	if evs := log.snapshot(); len(evs) != 0 {
 		t.Fatalf("listed itself: %+v", evs)
+	}
+}
+
+// RECENT-21 tailnet path: the peer's protocol version comes from the hello answer.
+func TestRECENT21_TailnetPeerVersionReported(t *testing.T) {
+	mac := netip.MustParseAddr("100.125.24.127")
+	ts := Tailscale{
+		Self: transport.Peer{ID: "pc"},
+		Port: 47800,
+		Status: func(context.Context) ([]TailnetDevice, error) {
+			return []TailnetDevice{{Name: "mac", IP: mac}}, nil
+		},
+		Hello: func(context.Context, string) (transport.Identity, error) {
+			return transport.Identity{ID: "mac-id", Name: "MacBook", Version: 1}, nil
+		},
+	}
+	var log eventLog
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx, log.emit)
+	waitFor(t, "Up for the Mac", func() bool { return len(log.snapshot()) > 0 })
+	evs := log.snapshot()
+	if len(evs) != 1 || evs[0].Peer.ID != "mac-id" || evs[0].Peer.Version != 1 {
+		t.Fatalf("events = %+v, want one Up for mac-id with Version 1", evs)
+	}
+}
+
+// Decision 3 on #15: a hello answer with v missing or not positive is reported as
+// Version 0 (unknown = normal states), never as "needs update".
+func TestRECENT21_TailnetPeerWithoutVersionIsUnknown(t *testing.T) {
+	ipA := netip.MustParseAddr("100.64.0.1")
+	ipB := netip.MustParseAddr("100.64.0.2")
+	ts := Tailscale{
+		Self: transport.Peer{ID: "pc"},
+		Port: 47800,
+		Status: func(context.Context) ([]TailnetDevice, error) {
+			return []TailnetDevice{{Name: "no-v", IP: ipA}, {Name: "neg-v", IP: ipB}}, nil
+		},
+		Hello: func(_ context.Context, addr string) (transport.Identity, error) {
+			if addr == "100.64.0.1:47800" {
+				return transport.Identity{ID: "no-v-id", Name: "NoV"}, nil // v missing
+			}
+			return transport.Identity{ID: "neg-v-id", Name: "NegV", Version: -1}, nil // unreadable
+		},
+	}
+	var log eventLog
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx, log.emit)
+	waitFor(t, "both peers listed", func() bool {
+		ids := map[string]bool{}
+		for _, ev := range log.snapshot() {
+			ids[ev.Peer.ID] = true
+		}
+		return ids["no-v-id"] && ids["neg-v-id"]
+	})
+	for _, ev := range log.snapshot() {
+		if ev.Peer.Version != 0 {
+			t.Fatalf("peer %s reported Version %d, want 0 (unknown)", ev.Peer.ID, ev.Peer.Version)
+		}
+	}
+}
+
+// Reviewer note on #15 (PR #21 review): two nodes running the current version must
+// never show each other as "needs update" over the tailnet path, so the version a
+// node answers with hello must reach the hub intact.
+func TestRECENT21_TailnetCurrentVersionNeverNeedsUpdate(t *testing.T) {
+	other := netip.MustParseAddr("100.64.0.9")
+	hub := transport.NewHub()
+	ts := Tailscale{
+		Self: transport.Peer{ID: "me"},
+		Port: 47800,
+		Status: func(context.Context) ([]TailnetDevice, error) {
+			return []TailnetDevice{{Name: "other", IP: other}}, nil
+		},
+		Hello: func(context.Context, string) (transport.Identity, error) {
+			return transport.Identity{ID: "other-id", Name: "Other", Version: proto.Version}, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx, func(ev Event) {
+		if ev.Up {
+			hub.Upsert(ev.Peer)
+		}
+	})
+	waitFor(t, "the peer is listed", func() bool { return len(hub.Peers()) == 1 })
+	p := hub.Peers()[0]
+	if p.Version != proto.Version || p.State == transport.StateNeedsUpdate {
+		t.Fatalf("peer = %+v state %v, want Version %d and not needs update", p, p.State, proto.Version)
 	}
 }
 

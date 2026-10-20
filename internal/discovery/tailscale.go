@@ -66,7 +66,11 @@ func (t Tailscale) Run(ctx context.Context, emit func(Event)) error {
 					id, err := hello(hctx, net.JoinHostPort(d.IP.String(), strconv.Itoa(t.Port)))
 					cancel()
 					if err == nil && id.ID != "" {
-						b.seen(transport.Peer{ID: id.ID, Name: id.Name, Addrs: []netip.AddrPort{addr}})
+						v := id.Version
+						if v < 0 {
+							v = 0 // RECENT-21 decision 3: unreadable version = unknown, normal states
+						}
+						b.seen(transport.Peer{ID: id.ID, Name: id.Name, Version: v, Addrs: []netip.AddrPort{addr}})
 					}
 				}(d)
 			}

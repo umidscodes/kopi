@@ -184,6 +184,9 @@ func TestNodeAnswersHelloWithItsIdentity(t *testing.T) {
 	if id.ID != "a-device-id" || id.Name != "a-device-id" {
 		t.Fatalf("hello identity = %+v", id)
 	}
+	if id.Version != proto.Version {
+		t.Fatalf("hello identity Version = %d, want proto.Version (%d)", id.Version, proto.Version)
+	}
 }
 
 func TestDeadPeerDoesNotBlockOthers(t *testing.T) {
