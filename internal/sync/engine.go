@@ -18,6 +18,13 @@ import (
 // ErrNoPassphrase is returned by Receive when no passphrase is configured (SEC-4).
 var ErrNoPassphrase = errors.New("kopi: no passphrase configured")
 
+// ErrKeyChanged is returned by Receive when the passphrase changed while the message
+// was being decrypted with the old one. The message is dropped (RECENT-13).
+var ErrKeyChanged = errors.New("kopi: passphrase changed while receiving")
+
+// errOwn marks a message this device sent itself; Receive ignores it.
+var errOwn = errors.New("kopi: own message")
+
 // Broadcaster delivers a sealed message to every known peer.
 type Broadcaster interface {
 	Broadcast(sealed []byte)
@@ -77,6 +84,7 @@ type Engine struct {
 
 	mu               gosync.Mutex
 	key              *proto.Key // nil: no passphrase (SEC-4); changeable via SetKey
+	keyGen           uint64     // bumped by every SetKey
 	paused           bool
 	includeSensitive bool
 	// Hash of the last clip applied from a peer. Local changes with this hash are the
@@ -110,6 +118,7 @@ func New(o Options) *Engine {
 func (e *Engine) SetKey(k *proto.Key) {
 	e.mu.Lock()
 	e.key = k
+	e.keyGen++
 	e.mu.Unlock()
 }
 
@@ -274,25 +283,48 @@ func (e *Engine) Restore(text string) error {
 // Receive processes a sealed message from a peer. It returns proto.ErrDecrypt when
 // the peer uses a different passphrase, so the caller can mark that peer (SEC-1).
 func (e *Engine) Receive(sealed []byte) error {
-	e.mu.Lock()
-	kp := e.key
-	e.mu.Unlock()
-	if kp == nil {
-		return ErrNoPassphrase
+	m, gen, err := e.open(sealed)
+	if errors.Is(err, errOwn) {
+		return nil
 	}
-	m, err := proto.Open(*kp, sealed)
 	if err != nil {
 		return err
 	}
+	return e.apply(m, gen)
+}
+
+// open decrypts and checks a message with the current key, outside e.mu. It also
+// returns the key generation it used, for apply.
+func (e *Engine) open(sealed []byte) (proto.Message, uint64, error) {
+	e.mu.Lock()
+	kp, gen := e.key, e.keyGen
+	e.mu.Unlock()
+	if kp == nil {
+		return proto.Message{}, 0, ErrNoPassphrase
+	}
+	m, err := proto.Open(*kp, sealed)
+	if err != nil {
+		return proto.Message{}, 0, err
+	}
 	if m.From == e.opts.DeviceID {
-		return nil
+		return proto.Message{}, 0, errOwn
 	}
 	if err := e.guard.Check(m); err != nil {
-		return err
+		return proto.Message{}, 0, err
 	}
+	return m, gen, nil
+}
 
+// apply puts a message opened with key generation gen on the clipboard, unless it
+// lost (SYNC-6), sync is paused, or the passphrase changed since it was opened: a
+// clip sealed with the old passphrase must not be applied or listed after the
+// change (RECENT-13).
+func (e *Engine) apply(m proto.Message, gen uint64) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if gen != e.keyGen {
+		return ErrKeyChanged
+	}
 	if e.paused {
 		return nil
 	}

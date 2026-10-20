@@ -1296,3 +1296,88 @@ func TestRECENT5_SYNC6_RestoreRacingNewerReceiveKeepsListOrder(t *testing.T) {
 	}
 	checkRecentMatchesClipboard(t, c, rec, *recvErr)
 }
+
+// lockRec is a Recorder that fails the test if Record runs without e.mu held. Record
+// must run in the same critical section that decides the SYNC-6 order, or a racing
+// Receive can slip in between and the list no longer matches the clipboard. The tests
+// using it run on one goroutine, so TryLock only fails because the engine holds e.mu.
+type lockRec struct {
+	t *testing.T
+	e *Engine // set after the engine is created
+	fakeRec
+}
+
+func (r *lockRec) Record(text, from string, at time.Time) {
+	if r.e.mu.TryLock() {
+		r.e.mu.Unlock()
+		r.t.Errorf("Record(%q, from %q) called without the engine lock held", text, from)
+	}
+	r.fakeRec.Record(text, from, at)
+}
+
+func TestRECENT1_RecordRunsUnderEngineLock(t *testing.T) {
+	n := newNet()
+	recA, recB := &lockRec{t: t}, &lockRec{t: t}
+	a := n.add(t, "a", withRecent(recA))
+	b := n.add(t, "b", withRecent(recB))
+	recA.e, recB.e = a.engine, b.engine
+
+	a.engine.HandleLocal(clip.Item{Text: "sent"}) // A records a send, B a receive
+	if err := a.engine.Restore("restored"); err != nil {
+		t.Fatal(err)
+	}
+	a.engine.SetPaused(true)
+	if err := a.engine.Restore("paused restore"); err != nil {
+		t.Fatal(err)
+	}
+	if recA.count() != 3 || recB.count() != 2 {
+		t.Fatalf("recorded A=%d B=%d, want 3 and 2", recA.count(), recB.count())
+	}
+}
+
+// RECENT-13: a clip decrypted with the old passphrase, and applied only after the
+// passphrase changed (a race in Receive), is dropped: it is neither written nor listed.
+func TestRECENT13_ClipOpenedWithOldKeyDroppedAfterKeyChange(t *testing.T) {
+	n := newNet()
+	rec := &fakeRec{}
+	a := n.add(t, "a", withRecent(rec))
+	seal := func(k proto.Key, text string, at time.Time) []byte {
+		t.Helper()
+		s, err := proto.Seal(k, proto.Message{ID: proto.NewID(), From: "b", SentAt: at, Text: text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	now := time.Now()
+
+	m, gen, err := a.engine.open(seal(keyAlpha, "old passphrase", now)) // Receive's first half
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.engine.SetKey(&keyBravo) // the passphrase changes before the second half
+	if err := a.engine.apply(m, gen); !errors.Is(err, ErrKeyChanged) {
+		t.Fatalf("apply after key change = %v, want ErrKeyChanged", err)
+	}
+	if a.clip.Writes() != 0 || rec.count() != 0 {
+		t.Fatalf("old-key clip applied: clipboard %q, recorded %+v", a.clip.Text(), rec.entries())
+	}
+
+	// Setting the same passphrase again also counts as a change.
+	m, gen, err = a.engine.open(seal(keyBravo, "same key", now.Add(time.Millisecond)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.engine.SetKey(&keyBravo)
+	if err := a.engine.apply(m, gen); !errors.Is(err, ErrKeyChanged) {
+		t.Fatalf("apply after re-setting the key = %v, want ErrKeyChanged", err)
+	}
+
+	// Without a change in between, a clip applies as usual.
+	if err := a.engine.Receive(seal(keyBravo, "new passphrase", now.Add(2*time.Millisecond))); err != nil {
+		t.Fatal(err)
+	}
+	if a.clip.Text() != "new passphrase" || rec.count() != 1 {
+		t.Fatalf("clip under the new key: clipboard %q, recorded %d", a.clip.Text(), rec.count())
+	}
+}
