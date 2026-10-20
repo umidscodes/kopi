@@ -52,14 +52,22 @@ type kopiApp struct {
 	dirty      chan struct{}
 	dialogOpen atomic.Bool
 
-	mStatus    *systray.MenuItem
-	mDevices   *systray.MenuItem
-	mPeers     [maxPeerSlots]*systray.MenuItem
-	mPause     *systray.MenuItem
-	mSensitive *systray.MenuItem
-	mPass      *systray.MenuItem
-	mLogin     *systray.MenuItem
-	mQuit      *systray.MenuItem
+	// recentDrawn is the snapshot the Recent clips submenu was last drawn from (guarded
+	// by mu). A slot click restores from it, never from a fresh read of the list (RECENT-5).
+	recentDrawn []recentSlot
+
+	mStatus      *systray.MenuItem
+	mDevices     *systray.MenuItem
+	mPeers       [maxPeerSlots]*systray.MenuItem
+	mRecent      *systray.MenuItem
+	mRecentNone  *systray.MenuItem
+	mRecentSlots [recentSlots]*systray.MenuItem
+	mRecentClear *systray.MenuItem
+	mPause       *systray.MenuItem
+	mSensitive   *systray.MenuItem
+	mPass        *systray.MenuItem
+	mLogin       *systray.MenuItem
+	mQuit        *systray.MenuItem
 }
 
 func runApp() {
@@ -122,6 +130,17 @@ func (a *kopiApp) onReady() {
 		a.mPeers[i].Hide()
 	}
 	systray.AddSeparator()
+	a.mRecent = systray.AddMenuItem("Recent clips", "Put one of the last clips back on the clipboard")
+	a.mRecentNone = a.mRecent.AddSubMenuItem(noRecentLabel, "")
+	a.mRecentNone.Disable()
+	for i := range a.mRecentSlots {
+		a.mRecentSlots[i] = a.mRecent.AddSubMenuItem("", "")
+		a.mRecentSlots[i].Hide()
+		go a.watchRecentSlot(i)
+	}
+	a.mRecentClear = a.mRecent.AddSubMenuItem("Clear", "Empty this list on this device only")
+	a.mRecentClear.Disable()
+	go a.watchRecentClear()
 	a.mPause = systray.AddMenuItemCheckbox("Pause sync", "Stop sending and receiving clips", false)
 	// The sending device's setting decides whether a sensitive copy leaves it, so the
 	// label says "from this device" (rc1 testing: users toggled it on the receiver).
@@ -232,6 +251,7 @@ func (a *kopiApp) onEvent(ev ksync.Event) {
 		a.setFlash("Skipped a sensitive clip", 3*time.Second)
 	case ksync.EventSent, ksync.EventApplied:
 		log.Printf("event %d, %d bytes", ev.Kind, ev.Size)
+		a.markDirty() // the list changed (Record runs before the event is emitted)
 	}
 }
 
@@ -252,11 +272,15 @@ func (a *kopiApp) markDirty() {
 
 // refresher redraws the menu whenever something changed.
 func (a *kopiApp) refresher() {
+	t := time.NewTicker(recentRefresh) // keeps the age labels fresh (RECENT-10)
+	defer t.Stop()
 	for {
 		select {
 		case <-a.ctx.Done():
 			return
 		case <-a.dirty:
+			a.redraw()
+		case <-t.C:
 			a.redraw()
 		}
 	}
@@ -265,6 +289,7 @@ func (a *kopiApp) refresher() {
 func (a *kopiApp) redraw() {
 	a.mu.Lock()
 	n, startErr, started, writeErr := a.node, a.startErr, a.started, a.writeErr
+	selfID := a.cfg.DeviceID
 	flash := ""
 	if time.Now().Before(a.flashTil) {
 		flash = a.flash
@@ -295,6 +320,7 @@ func (a *kopiApp) redraw() {
 	case a.translocated:
 		status = "Syncing, but running from a temporary copy — clear quarantine (see README)"
 	}
+	a.redrawRecent(n, selfID)
 	a.mStatus.SetTitle("Kopi — " + status)
 	systray.SetTooltip("Kopi — " + status)
 	for i, m := range a.mPeers {
@@ -307,6 +333,73 @@ func (a *kopiApp) redraw() {
 			m.Show()
 		default:
 			m.Hide()
+		}
+	}
+}
+
+// redrawRecent draws the Recent clips submenu from the node's list and remembers the
+// snapshot it drew. It runs from the refresher, never from an engine callback.
+func (a *kopiApp) redrawRecent(n *app.Node, selfID string) {
+	var slots []recentSlot
+	if n != nil {
+		slots = recentMenu(n.Recent.Entries(), time.Now(), selfID)
+	}
+	a.mu.Lock()
+	a.recentDrawn = slots
+	a.mu.Unlock()
+	for i, m := range a.mRecentSlots {
+		if i < len(slots) {
+			m.SetTitle(slots[i].Label)
+			m.Show()
+		} else {
+			m.Hide()
+		}
+	}
+	if len(slots) == 0 {
+		a.mRecentNone.Show()
+		a.mRecentClear.Disable()
+	} else {
+		a.mRecentNone.Hide()
+		a.mRecentClear.Enable()
+	}
+}
+
+// watchRecentSlot restores the entry shown in slot i when it is clicked (RECENT-5).
+func (a *kopiApp) watchRecentSlot(i int) {
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-a.mRecentSlots[i].ClickedCh:
+			a.mu.Lock()
+			text, ok := slotText(a.recentDrawn, i)
+			a.mu.Unlock()
+			n := a.currentNode()
+			if !ok || n == nil {
+				continue
+			}
+			if err := n.Engine.Restore(text); err != nil {
+				log.Printf("restore recent slot %d (%d bytes): %v", i, len(text), err)
+			} else {
+				log.Printf("restored recent slot %d (%d bytes)", i, len(text))
+			}
+			a.markDirty()
+		}
+	}
+}
+
+// watchRecentClear empties this device's list; the clipboard is left alone (RECENT-12).
+func (a *kopiApp) watchRecentClear() {
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-a.mRecentClear.ClickedCh:
+			if n := a.currentNode(); n != nil {
+				n.Recent.Clear()
+				log.Print("recent clips cleared")
+			}
+			a.markDirty()
 		}
 	}
 }
