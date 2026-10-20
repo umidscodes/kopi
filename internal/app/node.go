@@ -67,7 +67,7 @@ func Start(ctx context.Context, o Options) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	srv.SetIdentity(transport.Identity{ID: o.DeviceID, Name: o.DeviceName, Version: 1})
+	srv.SetIdentity(transport.Identity{ID: o.DeviceID, Name: o.DeviceName, Version: proto.Version})
 	disc := o.Discovery
 	if disc == nil {
 		self := transport.Peer{ID: o.DeviceID, Name: o.DeviceName}
