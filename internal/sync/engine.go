@@ -184,13 +184,7 @@ func (e *Engine) HandleLocal(it clip.Item) {
 		e.emit(Event{Kind: EventTooLarge, Size: len(text)})
 		return
 	}
-	// Timestamps are millisecond precision on the wire. Keep them strictly increasing so
-	// two quick copies (or a copy right after receiving a clip) never tie or go backwards.
-	at := e.opts.Now().Truncate(time.Millisecond)
-	if e.hasLast && !at.After(e.lastAt) {
-		at = e.lastAt.Add(time.Millisecond)
-	}
-	m := proto.Message{ID: proto.NewID(), From: e.opts.DeviceID, SentAt: at, Text: text, Sensitive: it.Sensitive}
+	m := proto.Message{ID: proto.NewID(), From: e.opts.DeviceID, SentAt: e.nextSentAt(), Text: text, Sensitive: it.Sensitive}
 	e.lastAt, e.lastFrom, e.hasLast = m.SentAt, m.From, true
 	key := *e.key
 	e.mu.Unlock()
@@ -206,6 +200,72 @@ func (e *Engine) HandleLocal(it clip.Item) {
 		e.record(text, e.opts.DeviceID, e.opts.Now())
 	}
 	e.emit(Event{Kind: EventSent, Size: len(text)})
+}
+
+// nextSentAt returns the timestamp for a clip this device sends now. Timestamps are
+// millisecond precision on the wire. Keep them strictly increasing so two quick copies
+// (or a copy right after receiving a clip) never tie or go backwards. e.mu must be held.
+func (e *Engine) nextSentAt() time.Time {
+	at := e.opts.Now().Truncate(time.Millisecond)
+	if e.hasLast && !at.After(e.lastAt) {
+		at = e.lastAt.Add(time.Millisecond)
+	}
+	return at
+}
+
+// Restore puts a Recent clips entry back on the clipboard as a deliberate new copy
+// (RECENT-5). It is sent once as a new clip, even when it is the clip just received
+// (RECENT-6); the clipboard change caused by its own Write is not sent again. While
+// paused it only writes the clipboard and records the entry (RECENT-7). Without a
+// passphrase (paused or not) it only writes the clipboard (SEC-4).
+func (e *Engine) Restore(text string) error {
+	text = normalize(text)
+	write := text
+	if e.opts.LineEnding != "\n" {
+		write = strings.ReplaceAll(text, "\n", e.opts.LineEnding)
+	}
+
+	e.mu.Lock()
+	// Mark the Write's echo like an applied clip (SYNC-4); the next other local change
+	// clears it, so copying this text again later still syncs (SYNC-5).
+	prevHash, prevHas := e.appliedHash, e.hasApplied
+	e.appliedHash = sha256.Sum256([]byte(text))
+	e.hasApplied = true
+	if err := e.opts.Clipboard.Write(write); err != nil {
+		// Nothing was written, so there is no echo to suppress.
+		e.appliedHash, e.hasApplied = prevHash, prevHas
+		e.mu.Unlock()
+		return err
+	}
+	switch {
+	case e.key == nil:
+		// No passphrase wins over paused (gate 3 decision): nothing is recorded or
+		// sent (SEC-4, RECENT-16).
+		e.mu.Unlock()
+		e.emit(Event{Kind: EventNoPassphrase})
+		return nil
+	case e.paused:
+		e.mu.Unlock()
+		e.record(text, e.opts.DeviceID, e.opts.Now())
+		return nil
+	case len(text) > proto.MaxTextBytes:
+		e.mu.Unlock()
+		e.emit(Event{Kind: EventTooLarge, Size: len(text)})
+		return nil
+	}
+	m := proto.Message{ID: proto.NewID(), From: e.opts.DeviceID, SentAt: e.nextSentAt(), Text: text}
+	e.lastAt, e.lastFrom, e.hasLast = m.SentAt, m.From, true
+	key := *e.key
+	e.mu.Unlock()
+
+	sealed, err := proto.Seal(key, m)
+	if err != nil {
+		return err
+	}
+	e.opts.Network.Broadcast(sealed)
+	e.record(text, e.opts.DeviceID, e.opts.Now())
+	e.emit(Event{Kind: EventSent, Size: len(text)})
+	return nil
 }
 
 // Receive processes a sealed message from a peer. It returns proto.ErrDecrypt when
