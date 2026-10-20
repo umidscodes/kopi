@@ -228,9 +228,12 @@ func (e *Engine) Restore(text string) error {
 	e.mu.Lock()
 	// Mark the Write's echo like an applied clip (SYNC-4); the next other local change
 	// clears it, so copying this text again later still syncs (SYNC-5).
+	prevHash, prevHas := e.appliedHash, e.hasApplied
 	e.appliedHash = sha256.Sum256([]byte(text))
 	e.hasApplied = true
 	if err := e.opts.Clipboard.Write(write); err != nil {
+		// Nothing was written, so there is no echo to suppress.
+		e.appliedHash, e.hasApplied = prevHash, prevHas
 		e.mu.Unlock()
 		return err
 	}

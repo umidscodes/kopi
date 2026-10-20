@@ -973,9 +973,9 @@ func TestRECENT6_RestoringJustReceivedClipStillSyncs(t *testing.T) {
 	fixed := time.UnixMilli(1_790_000_000_000) // same ms everywhere: exercises the SentAt bump
 	now := func() time.Time { return fixed }
 	n := newNet()
-	recC := &fakeRec{}
+	recB, recC := &fakeRec{}, &fakeRec{}
 	a := n.add(t, "a", clock(now))
-	b := n.add(t, "b", clock(now))
+	b := n.add(t, "b", clock(now), withRecent(recB))
 	c := n.add(t, "c", clock(now), withRecent(recC))
 	c.engine.SetPaused(true)
 	c.clip.Copy("older", false)
@@ -1015,10 +1015,94 @@ func TestRECENT6_RestoringJustReceivedClipStillSyncs(t *testing.T) {
 	if got := lastRec(t, recC); got.text != "one" || got.from != "b" {
 		t.Errorf("C recorded %+v, want {one b}", got)
 	}
+	// B listed "one" from A when it arrived; the restore lists it as this device, now.
+	if got := recB.entries(); len(got) != 2 || got[0] != (recEntry{"one", "a", fixed}) || got[1] != (recEntry{"one", "b", fixed}) {
+		t.Errorf("B recorded %+v, want [{one a} {one b}] at %v", got, fixed)
+	}
 	for _, d := range []*device{a, b, c} {
 		if errs := d.errors(); len(errs) != 0 {
 			t.Errorf("%s errors: %v", d.id, errs)
 		}
+	}
+}
+
+// The restore must be newer than the clip it restores, even when the restorer sorts
+// first on the SYNC-6 tie-break or its clock is behind the original sender's.
+func TestRECENT6_RestoreOfReceivedClipBeatsItForEveryRestorer(t *testing.T) {
+	t0 := time.UnixMilli(1_790_000_000_000)
+	cases := []struct {
+		name       string
+		restorerAt time.Time // the restorer's clock; the sender's is t0
+	}{
+		{"lower ID same millisecond", t0},
+		{"lower ID clock 2s behind", t0.Add(-2 * time.Second)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			senderNow := func() time.Time { return t0 }
+			restorerNow := func() time.Time { return tc.restorerAt }
+			n := newNet()
+			recZ, recC := &fakeRec{}, &fakeRec{}
+			a := n.add(t, "a", clock(restorerNow)) // restorer: lower ID than the sender
+			z := n.add(t, "z", clock(senderNow), withRecent(recZ))
+			c := n.add(t, "c", clock(senderNow), withRecent(recC))
+			c.engine.SetPaused(true)
+			c.clip.Copy("older", false)
+
+			z.engine.HandleLocal(clip.Item{Text: "one"})
+			if got := a.clip.Text(); got != "one" {
+				t.Fatalf("A clipboard = %q, want one", got)
+			}
+			received := lastSent(t, z)
+			c.engine.SetPaused(false)
+
+			if err := a.engine.Restore("one"); err != nil {
+				t.Fatalf("Restore: %v", err)
+			}
+			if got := lastSent(t, a).SentAt; !got.After(received.SentAt) {
+				t.Errorf("restore SentAt %v not after the received clip's %v", got, received.SentAt)
+			}
+			if got := c.clip.Text(); got != "one" {
+				t.Errorf("C clipboard = %q, want one (restore dropped as older?)", got)
+			}
+			if got := lastRec(t, recC); got.text != "one" || got.from != "a" {
+				t.Errorf("C recorded %+v, want {one a}", got)
+			}
+			if got := lastRec(t, recZ); got.text != "one" || got.from != "a" {
+				t.Errorf("Z recorded %+v, want {one a} (restore dropped as older?)", got)
+			}
+		})
+	}
+}
+
+// failingClip is a clipboard whose Write always fails, e.g. another app holds it open.
+type failingClip struct{ *clip.Fake }
+
+func (failingClip) Write(string) error { return errors.New("clipboard busy") }
+
+func TestRECENT5_RestoreFailedWriteSendsNothing(t *testing.T) {
+	n := newNet()
+	rec := &fakeRec{}
+	a := n.add(t, "a", withRecent(rec), func(o *Options) { o.Clipboard = failingClip{clip.NewFake()} })
+	b := n.add(t, "b")
+	a.engine.HandleLocal(clip.Item{Text: "x"})
+	a.engine.HandleLocal(clip.Item{Text: "y"})
+	if err := a.engine.Restore("x"); err == nil {
+		t.Fatal("Restore returned nil, want the Write error")
+	}
+	if got := a.sentCount(); got != 2 {
+		t.Errorf("A sent %d after a failed restore, want 2", got)
+	}
+	if got := rec.count(); got != 2 {
+		t.Errorf("A recorded %d after a failed restore, want 2", got)
+	}
+	// Nothing was written, so there is no echo: copying "x" by hand must still sync.
+	a.engine.HandleLocal(clip.Item{Text: "x"})
+	if got := a.sentCount(); got != 3 {
+		t.Errorf("manual copy after a failed restore not sent: sent=%d, want 3", got)
+	}
+	if got := b.clip.Text(); got != "x" {
+		t.Errorf("B clipboard = %q, want x", got)
 	}
 }
 
