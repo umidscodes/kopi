@@ -1231,3 +1231,68 @@ func TestRECENT7_RestoreWithoutPassphraseIsLocalOnly(t *testing.T) {
 		t.Errorf("echo of the restore sent after setting a passphrase: %d", a.sentCount())
 	}
 }
+
+// --- Reviewer note (PR #24): the Recent order follows the clipboard ---
+
+// hookNet is a Broadcaster that runs a hook on the first Broadcast. The engine calls
+// Broadcast after releasing its lock, so the hook slips a Receive in between a local
+// send and whatever the engine does after Broadcast, deterministically.
+type hookNet struct{ hook func() }
+
+func (h *hookNet) Broadcast([]byte) {
+	if f := h.hook; f != nil {
+		h.hook = nil
+		f()
+	}
+}
+
+// raceWithNewerReceive returns engine "a" whose next Broadcast is overtaken by a newer
+// clip from "b". That clip wins (SYNC-6) and ends on A's clipboard.
+func raceWithNewerReceive(t *testing.T) (*Engine, *clip.Fake, *fakeRec, *error) {
+	t.Helper()
+	fixed := time.UnixMilli(1_790_000_000_000)
+	c := clip.NewFake()
+	rec := &fakeRec{}
+	hn := &hookNet{}
+	e := New(Options{DeviceID: "a", Clipboard: c, Network: hn, Key: &keyAlpha,
+		Now: func() time.Time { return fixed }, Recent: rec})
+	sealedB, err := proto.Seal(keyAlpha, proto.Message{ID: proto.NewID(), From: "b",
+		SentAt: fixed.Add(time.Second), Text: "from-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recvErr := errors.New("receive never ran")
+	hn.hook = func() { recvErr = e.Receive(sealedB) }
+	return e, c, rec, &recvErr
+}
+
+func checkRecentMatchesClipboard(t *testing.T, c *clip.Fake, rec *fakeRec, recvErr error) {
+	t.Helper()
+	if recvErr != nil {
+		t.Fatalf("Receive: %v", recvErr)
+	}
+	if c.Text() != "from-b" {
+		t.Fatalf("clipboard = %q, want the newer clip from-b", c.Text())
+	}
+	if got := lastRec(t, rec); got.text != "from-b" {
+		t.Fatalf("newest Recent entry = %q, but the clipboard holds %q: %+v", got.text, c.Text(), rec.entries())
+	}
+	if rec.count() != 2 {
+		t.Fatalf("recorded %d entries, want 2: %+v", rec.count(), rec.entries())
+	}
+}
+
+func TestRECENT1_SYNC6_SendRacingNewerReceiveKeepsListOrder(t *testing.T) {
+	e, c, rec, recvErr := raceWithNewerReceive(t)
+	c.Copy("from-a", false)
+	e.HandleLocal(clip.Item{Text: "from-a"})
+	checkRecentMatchesClipboard(t, c, rec, *recvErr)
+}
+
+func TestRECENT5_SYNC6_RestoreRacingNewerReceiveKeepsListOrder(t *testing.T) {
+	e, c, rec, recvErr := raceWithNewerReceive(t)
+	if err := e.Restore("restored"); err != nil {
+		t.Fatal(err)
+	}
+	checkRecentMatchesClipboard(t, c, rec, *recvErr)
+}

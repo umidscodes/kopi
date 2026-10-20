@@ -6,10 +6,13 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	gosync "sync"
+	"sync/atomic"
 
 	"github.com/umidscodes/kopi/internal/clip"
 	"github.com/umidscodes/kopi/internal/discovery"
 	"github.com/umidscodes/kopi/internal/proto"
+	"github.com/umidscodes/kopi/internal/recent"
 	ksync "github.com/umidscodes/kopi/internal/sync"
 	"github.com/umidscodes/kopi/internal/transport"
 )
@@ -34,14 +37,31 @@ type Options struct {
 type Node struct {
 	Engine *ksync.Engine
 	Hub    *transport.Hub
+	// Recent is this device's "Recent clips" list, fed by Engine.
+	Recent *recent.List
 	server *transport.Server
 	done   chan struct{}
+
+	// names is a snapshot of the hub's peer names (ID -> name), read without a lock
+	// by Recent.NameOf. The engine records clips while holding its own lock, so the
+	// lookup must not wait on anything (reviewer note on PR #24). namesMu only orders
+	// refreshes so an older snapshot never overwrites a newer one.
+	names   atomic.Pointer[map[string]string]
+	namesMu gosync.Mutex
 }
 
 // Start brings a node up. It runs until ctx is cancelled; Wait blocks until then.
 func Start(ctx context.Context, o Options) (*Node, error) {
-	hub := transport.NewHub()
-	hub.OnChange = o.OnPeersChanged
+	n := &Node{Hub: transport.NewHub(), Recent: &recent.List{}, done: make(chan struct{})}
+	hub := n.Hub
+	// Decision 4: the sender's display name is stored when the clip is recorded.
+	n.Recent.NameOf = n.nameOf
+	hub.OnChange = func() {
+		n.refreshNames()
+		if o.OnPeersChanged != nil {
+			o.OnPeersChanged()
+		}
+	}
 	eng := ksync.New(ksync.Options{
 		DeviceID:         o.DeviceID,
 		Clipboard:        o.Clipboard,
@@ -50,7 +70,9 @@ func Start(ctx context.Context, o Options) (*Node, error) {
 		IncludeSensitive: o.IncludeSensitive,
 		LineEnding:       o.LineEnding,
 		OnEvent:          o.OnEvent,
+		Recent:           n.Recent,
 	})
+	n.Engine = eng
 	srv, err := transport.Listen(o.ListenAddr, func(remote netip.Addr, sealed []byte) error {
 		err := eng.Receive(sealed)
 		switch {
@@ -77,7 +99,7 @@ func Start(ctx context.Context, o Options) (*Node, error) {
 		}
 	}
 
-	n := &Node{Engine: eng, Hub: hub, server: srv, done: make(chan struct{})}
+	n.server = srv
 	errc := make(chan error, 3)
 	go func() { errc <- srv.Serve(ctx) }()
 	go func() { errc <- eng.Run(ctx) }()
@@ -106,3 +128,36 @@ func (n *Node) Port() int { return n.server.Port() }
 
 // Wait blocks until the node has fully stopped.
 func (n *Node) Wait() { <-n.done }
+
+// SetKey switches to a new passphrase (nil: none). Old peer verdicts no longer hold,
+// and the Recent clips list is emptied (RECENT-13). Pausing never touches the list
+// (RECENT-15).
+func (n *Node) SetKey(k *proto.Key) {
+	n.Engine.SetKey(k)
+	n.Hub.ResetStates()
+	n.Recent.Clear()
+}
+
+// nameOf returns the display name of a peer as last seen by the hub, "" if unknown.
+// Lock-free: it is called by the engine with the engine's lock held.
+func (n *Node) nameOf(id string) string {
+	if m := n.names.Load(); m != nil {
+		return (*m)[id]
+	}
+	return ""
+}
+
+// refreshNames rebuilds the name snapshot from the hub. It runs from Hub.OnChange,
+// which the hub calls after releasing its lock; it takes hub.mu (via Peers) but never
+// the engine's lock, and the hub never calls into the engine.
+func (n *Node) refreshNames() {
+	n.namesMu.Lock()
+	defer n.namesMu.Unlock()
+	m := map[string]string{}
+	for _, p := range n.Hub.Peers() {
+		if p.Name != "" {
+			m[p.ID] = p.Name
+		}
+	}
+	n.names.Store(&m)
+}

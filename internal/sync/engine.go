@@ -43,8 +43,10 @@ type Event struct {
 // Recorder is notified of every clip this device actually synced, for the
 // "Recent clips" list. text is normalized ("\n" line endings), from is the device ID
 // of the sender, at is when this device sent or applied the clip (RECENT-10).
-// Sensitive clips are never passed to Record (RECENT-18, RECENT-19). Like OnEvent,
-// Record must not block and must not call back into the Engine.
+// Sensitive clips are never passed to Record (RECENT-18, RECENT-19). Record is always
+// called with the engine's lock held, in the order the clips won (SYNC-6), so the
+// list matches the clipboard. It must not block, must not call back into the Engine
+// and must not take a lock whose holder may call into the Engine.
 type Recorder interface {
 	Record(text, from string, at time.Time)
 }
@@ -186,19 +188,20 @@ func (e *Engine) HandleLocal(it clip.Item) {
 	}
 	m := proto.Message{ID: proto.NewID(), From: e.opts.DeviceID, SentAt: e.nextSentAt(), Text: text, Sensitive: it.Sensitive}
 	e.lastAt, e.lastFrom, e.hasLast = m.SentAt, m.From, true
-	key := *e.key
-	e.mu.Unlock()
-
-	sealed, err := proto.Seal(key, m)
+	sealed, err := proto.Seal(*e.key, m)
 	if err != nil {
+		e.mu.Unlock()
 		return
 	}
-	e.opts.Network.Broadcast(sealed)
 	if !it.Sensitive {
 		// Record the moment this device sent, not the wire timestamp: `at` can be
-		// bumped past our own clock by the SYNC-6 rule (RECENT-10).
+		// bumped past our own clock by the SYNC-6 rule (RECENT-10). Record under e.mu,
+		// like Receive, so the list order follows the SYNC-6 order of the clipboard.
 		e.record(text, e.opts.DeviceID, e.opts.Now())
 	}
+	e.mu.Unlock()
+
+	e.opts.Network.Broadcast(sealed)
 	e.emit(Event{Kind: EventSent, Size: len(text)})
 }
 
@@ -245,8 +248,8 @@ func (e *Engine) Restore(text string) error {
 		e.emit(Event{Kind: EventNoPassphrase})
 		return nil
 	case e.paused:
-		e.mu.Unlock()
 		e.record(text, e.opts.DeviceID, e.opts.Now())
+		e.mu.Unlock()
 		return nil
 	case len(text) > proto.MaxTextBytes:
 		e.mu.Unlock()
@@ -255,15 +258,15 @@ func (e *Engine) Restore(text string) error {
 	}
 	m := proto.Message{ID: proto.NewID(), From: e.opts.DeviceID, SentAt: e.nextSentAt(), Text: text}
 	e.lastAt, e.lastFrom, e.hasLast = m.SentAt, m.From, true
-	key := *e.key
-	e.mu.Unlock()
-
-	sealed, err := proto.Seal(key, m)
+	sealed, err := proto.Seal(*e.key, m)
 	if err != nil {
+		e.mu.Unlock()
 		return err
 	}
+	e.record(text, e.opts.DeviceID, e.opts.Now()) // under e.mu, see HandleLocal
+	e.mu.Unlock()
+
 	e.opts.Network.Broadcast(sealed)
-	e.record(text, e.opts.DeviceID, e.opts.Now())
 	e.emit(Event{Kind: EventSent, Size: len(text)})
 	return nil
 }

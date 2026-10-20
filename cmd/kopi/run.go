@@ -425,8 +425,7 @@ func (a *kopiApp) setPassphraseFromTray() {
 
 func (a *kopiApp) applyPassphrase(p string) {
 	if n := a.currentNode(); n != nil {
-		n.Engine.SetKey(keyFor(p))
-		n.Hub.ResetStates()
+		n.SetKey(keyFor(p)) // also empties Recent clips (RECENT-13)
 	}
 	log.Print("passphrase changed")
 	a.markDirty()
