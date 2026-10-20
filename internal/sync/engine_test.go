@@ -820,3 +820,276 @@ func TestRECENT22_SensitiveRulesUnchanged(t *testing.T) {
 		}
 	})
 }
+
+// --- Feature: Recent clips, restore ---
+
+// stepClock is a test clock that only moves when the test says so.
+type stepClock struct {
+	mu  gosync.Mutex
+	cur time.Time
+}
+
+func (c *stepClock) now() time.Time  { c.mu.Lock(); defer c.mu.Unlock(); return c.cur }
+func (c *stepClock) set(t time.Time) { c.mu.Lock(); c.cur = t; c.mu.Unlock() }
+
+// lastSent opens the most recent message d broadcast.
+func lastSent(t *testing.T, d *device) proto.Message {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.sent) == 0 {
+		t.Fatalf("%s sent nothing", d.id)
+	}
+	m, err := proto.Open(keyAlpha, d.sent[len(d.sent)-1])
+	if err != nil {
+		t.Fatalf("open %s's last message: %v", d.id, err)
+	}
+	return m
+}
+
+func lastRec(t *testing.T, r *fakeRec) recEntry {
+	t.Helper()
+	got := r.entries()
+	if len(got) == 0 {
+		t.Fatal("nothing recorded")
+	}
+	return got[len(got)-1]
+}
+
+// These tests drive HandleLocal directly (no Run) so the clipboard echo of the
+// engine's own Write is delivered in order, without depending on goroutine timing.
+
+func TestRECENT5_RestoreWritesAndSyncsOnce(t *testing.T) {
+	t0 := time.UnixMilli(1_790_000_000_000)
+	ck := &stepClock{cur: t0}
+	n := newNet()
+	recA, recB := &fakeRec{}, &fakeRec{}
+	a := n.add(t, "a", clock(ck.now), withRecent(recA))
+	b := n.add(t, "b", clock(ck.now), withRecent(recB))
+	// A's Recent clips list "y", "x".
+	a.engine.HandleLocal(clip.Item{Text: "x"})
+	first := lastSent(t, a)
+	a.engine.HandleLocal(clip.Item{Text: "y"})
+	prev := lastSent(t, a)
+
+	later := t0.Add(5 * time.Second)
+	ck.set(later)
+	if err := a.engine.Restore("x"); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := a.clip.Text(); got != "x" {
+		t.Errorf("A clipboard = %q, want %q", got, "x")
+	}
+	if got := a.sentCount(); got != 3 {
+		t.Fatalf("A sent %d messages, want 3 (x, y, restore)", got)
+	}
+	m := lastSent(t, a)
+	if m.Text != "x" || m.From != "a" || m.Sensitive {
+		t.Errorf("restore message = {Text:%q From:%q Sensitive:%v}, want {x a false}", m.Text, m.From, m.Sensitive)
+	}
+	if m.ID == first.ID || m.ID == prev.ID {
+		t.Errorf("restore reused an old message ID")
+	}
+	if !m.SentAt.After(prev.SentAt) {
+		t.Errorf("restore SentAt %v not after previous %v", m.SentAt, prev.SentAt)
+	}
+	// The clipboard change caused by the restore's own Write is not sent again.
+	a.engine.HandleLocal(clip.Item{Text: "x"})
+	if got := a.sentCount(); got != 3 {
+		t.Errorf("A re-sent the echo of its restore: sent=%d, want 3", got)
+	}
+	if got := lastRec(t, recA); got != (recEntry{"x", "a", later}) {
+		t.Errorf("A recorded %+v, want {x a %v}", got, later)
+	}
+	if got := recA.count(); got != 3 {
+		t.Errorf("A recorded %d entries, want 3", got)
+	}
+	// B treats it as a normal newer clip: applied, listed with A's ID, not re-broadcast.
+	if got := b.clip.Text(); got != "x" {
+		t.Errorf("B clipboard = %q, want %q", got, "x")
+	}
+	if got := lastRec(t, recB); got.text != "x" || got.from != "a" {
+		t.Errorf("B recorded %+v, want {x a}", got)
+	}
+	b.engine.HandleLocal(clip.Item{Text: "x"}) // B's echo
+	if got := b.sentCount(); got != 0 {
+		t.Errorf("B re-broadcast the restored clip: sent=%d", got)
+	}
+	if errs := b.errors(); len(errs) != 0 {
+		t.Errorf("B errors: %v", errs)
+	}
+}
+
+func TestRECENT5_RestoreUsesLineEnding(t *testing.T) {
+	n := newNet()
+	a := n.add(t, "a", lineEnding("\r\n"))
+	b := n.add(t, "b")
+	if err := a.engine.Restore("l1\nl2"); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := a.clip.Text(); got != "l1\r\nl2" {
+		t.Errorf("A clipboard = %q, want CRLF line endings", got)
+	}
+	if got := lastSent(t, a).Text; got != "l1\nl2" {
+		t.Errorf("sent text = %q, want normalized", got)
+	}
+	a.engine.HandleLocal(clip.Item{Text: "l1\r\nl2"}) // echo with native line endings
+	if got := a.sentCount(); got != 1 {
+		t.Errorf("A sent %d, want 1", got)
+	}
+	if got := b.clip.Text(); got != "l1\nl2" {
+		t.Errorf("B clipboard = %q", got)
+	}
+}
+
+func TestRECENT5_ManualCopyAfterRestoreStillSyncs(t *testing.T) {
+	n := newNet()
+	a := n.add(t, "a")
+	b := n.add(t, "b")
+	a.engine.HandleLocal(clip.Item{Text: "x"})
+	a.engine.HandleLocal(clip.Item{Text: "y"})
+	if err := a.engine.Restore("x"); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	a.engine.HandleLocal(clip.Item{Text: "x"}) // echo of the restore
+	if got := a.sentCount(); got != 3 {
+		t.Fatalf("A sent %d, want 3", got)
+	}
+	// SYNC-5: copying "y" and then "x" again by hand still syncs both.
+	a.engine.HandleLocal(clip.Item{Text: "y"})
+	if got := b.clip.Text(); got != "y" {
+		t.Fatalf("B clipboard = %q, want y", got)
+	}
+	a.engine.HandleLocal(clip.Item{Text: "x"})
+	if got := b.clip.Text(); got != "x" {
+		t.Errorf("B clipboard = %q, want x", got)
+	}
+	if got := a.sentCount(); got != 5 {
+		t.Errorf("A sent %d, want 5", got)
+	}
+}
+
+func TestRECENT6_RestoringJustReceivedClipStillSyncs(t *testing.T) {
+	fixed := time.UnixMilli(1_790_000_000_000) // same ms everywhere: exercises the SentAt bump
+	now := func() time.Time { return fixed }
+	n := newNet()
+	recC := &fakeRec{}
+	a := n.add(t, "a", clock(now))
+	b := n.add(t, "b", clock(now))
+	c := n.add(t, "c", clock(now), withRecent(recC))
+	c.engine.SetPaused(true)
+	c.clip.Copy("older", false)
+
+	a.engine.HandleLocal(clip.Item{Text: "one"})
+	if got := b.clip.Text(); got != "one" {
+		t.Fatalf("B clipboard = %q, want one", got)
+	}
+	b.engine.HandleLocal(clip.Item{Text: "one"}) // B's echo of the apply
+	if got := c.clip.Text(); got != "older" {
+		t.Fatalf("paused C applied %q", got)
+	}
+	c.engine.SetPaused(false)
+
+	if err := b.engine.Restore("one"); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	b.engine.HandleLocal(clip.Item{Text: "one"}) // echo of the restore's Write
+	if got := c.clip.Text(); got != "one" {
+		t.Errorf("C clipboard = %q, want one", got)
+	}
+	if got := b.sentCount(); got != 1 {
+		t.Errorf("B sent %d times for the click, want exactly 1", got)
+	}
+	if got := lastSent(t, b); got.Text != "one" || got.From != "b" {
+		t.Errorf("B sent {%q %q}, want {one b}", got.Text, got.From)
+	}
+	// A and C send nothing after receiving it.
+	a.engine.HandleLocal(clip.Item{Text: "one"})
+	c.engine.HandleLocal(clip.Item{Text: "one"})
+	if got := a.sentCount(); got != 1 {
+		t.Errorf("A sent %d, want 1 (its own copy only)", got)
+	}
+	if got := c.sentCount(); got != 0 {
+		t.Errorf("C sent %d, want 0", got)
+	}
+	if got := lastRec(t, recC); got.text != "one" || got.from != "b" {
+		t.Errorf("C recorded %+v, want {one b}", got)
+	}
+	for _, d := range []*device{a, b, c} {
+		if errs := d.errors(); len(errs) != 0 {
+			t.Errorf("%s errors: %v", d.id, errs)
+		}
+	}
+}
+
+func TestRECENT7_RestoreWhilePausedIsLocalOnly(t *testing.T) {
+	t0 := time.UnixMilli(1_790_000_000_000)
+	ck := &stepClock{cur: t0}
+	n := newNet()
+	recA, recB := &fakeRec{}, &fakeRec{}
+	a := n.add(t, "a", clock(ck.now), withRecent(recA))
+	b := n.add(t, "b", clock(ck.now), withRecent(recB))
+	a.engine.HandleLocal(clip.Item{Text: "x"})
+	a.engine.HandleLocal(clip.Item{Text: "y"})
+	a.engine.SetPaused(true)
+
+	later := t0.Add(7 * time.Second)
+	ck.set(later)
+	if err := a.engine.Restore("x"); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := a.clip.Text(); got != "x" {
+		t.Errorf("A clipboard = %q, want x", got)
+	}
+	if got := a.sentCount(); got != 2 {
+		t.Errorf("paused A sent %d, want 2 (nothing for the restore)", got)
+	}
+	if got := b.clip.Text(); got != "y" {
+		t.Errorf("B clipboard = %q, want y", got)
+	}
+	// Listed first as "this device — just now" (decision 2).
+	if got := lastRec(t, recA); got != (recEntry{"x", "a", later}) {
+		t.Errorf("A recorded %+v, want {x a %v}", got, later)
+	}
+	if got := recA.count(); got != 3 {
+		t.Errorf("A recorded %d entries, want 3", got)
+	}
+	if got := recB.count(); got != 2 {
+		t.Errorf("B recorded %d entries, want 2", got)
+	}
+	// The restore's clipboard change is not sent after resuming either, even when its
+	// notification only arrives after the resume.
+	a.engine.SetPaused(false)
+	a.engine.HandleLocal(clip.Item{Text: "x"})
+	if got := a.sentCount(); got != 2 {
+		t.Errorf("A sent the paused restore after resuming: sent=%d, want 2", got)
+	}
+	if got := b.clip.Text(); got != "y" {
+		t.Errorf("B clipboard = %q, want y", got)
+	}
+}
+
+func TestRECENT7_RestoreWithoutPassphraseIsLocalOnly(t *testing.T) {
+	n := newNet()
+	rec := &fakeRec{}
+	a := n.add(t, "a", withKey(nil), withRecent(rec))
+	b := n.add(t, "b")
+	if err := a.engine.Restore("x"); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := a.clip.Text(); got != "x" {
+		t.Errorf("A clipboard = %q, want x", got)
+	}
+	if a.sentCount() != 0 || b.clip.Text() != "" {
+		t.Errorf("A without passphrase sent: sent=%d Bclip=%q", a.sentCount(), b.clip.Text())
+	}
+	if rec.count() != 0 {
+		t.Errorf("unsynced restore recorded (SEC-4, RECENT-16): %d", rec.count())
+	}
+	// Setting a passphrase later must not send the restore's echo.
+	a.engine.SetKey(&keyAlpha)
+	a.engine.HandleLocal(clip.Item{Text: "x"})
+	if a.sentCount() != 0 {
+		t.Errorf("echo of the restore sent after setting a passphrase: %d", a.sentCount())
+	}
+}
