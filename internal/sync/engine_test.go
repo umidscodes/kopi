@@ -518,6 +518,73 @@ func TestRECENT2_AppliedClipRecordedWithSender(t *testing.T) {
 	}
 }
 
+// A device's own sends must be recorded at its own clock (RECENT-10), not at the
+// SYNC-6 wire timestamp, which is bumped past a peer's ahead-in-time clip.
+func TestRECENT10_SentClipRecordedWithOwnClock(t *testing.T) {
+	tA := time.UnixMilli(1_790_000_000_000)
+	tB := tA.Add(90 * time.Second) // B's clock runs 90 s ahead of A's
+	n := newNet()
+	recA := &fakeRec{}
+	a := n.add(t, "a", clock(func() time.Time { return tA }), withRecent(recA))
+	b := n.add(t, "b", clock(func() time.Time { return tB }))
+
+	b.engine.HandleLocal(clip.Item{Text: "from b"}) // A applies it, so A's lastAt = tB
+	if a.clip.Text() != "from b" {
+		t.Fatalf("A clipboard = %q, want \"from b\"", a.clip.Text())
+	}
+	a.engine.HandleLocal(clip.Item{Text: "from a"})
+
+	if a.sentCount() != 1 {
+		t.Fatalf("A sent %d messages, want 1", a.sentCount())
+	}
+	m, err := proto.Open(keyAlpha, a.sent[0])
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// The wire keeps the bumped, strictly-increasing SYNC-6 timestamp...
+	if !m.SentAt.Equal(tB.Add(time.Millisecond)) {
+		t.Errorf("wire SentAt = %v, want %v (SYNC-6 bump kept)", m.SentAt, tB.Add(time.Millisecond))
+	}
+	// ...but the Recent entries use this device's own clock (RECENT-10). The applied
+	// clip is recorded first (inside B's broadcast), then A's own send.
+	got := recA.entries()
+	if len(got) != 2 {
+		t.Fatalf("A recorded %d entries, want 2: %+v", len(got), got)
+	}
+	if got[0].text != "from b" || got[0].from != "b" || !got[0].at.Equal(tA) {
+		t.Errorf("A recorded %+v for the applied clip, want {from b b %v}", got[0], tA)
+	}
+	if got[1].text != "from a" || got[1].from != "a" || !got[1].at.Equal(tA) {
+		t.Errorf("A recorded %+v for its own send, want {from a a %v} (own clock, not peer's)", got[1], tA)
+	}
+}
+
+// The recorder gets the normalized text, not the clipboard's native line endings:
+// RECENT-4 dedupe compares raw text, so "a\nb" copied locally and "a\nb" received
+// on a CRLF device must be one entry.
+func TestRECENT4_ReceivedTextRecordedNormalized(t *testing.T) {
+	n := newNet()
+	recB := &fakeRec{}
+	a := n.add(t, "a")
+	b := n.add(t, "b", lineEnding("\r\n"), withRecent(recB))
+
+	a.engine.HandleLocal(clip.Item{Text: "x\r\ny"})
+
+	if b.clip.Text() != "x\r\ny" {
+		t.Fatalf("B clipboard = %q, want \"x\\r\\ny\"", b.clip.Text())
+	}
+	got := recB.entries()
+	if len(got) != 1 {
+		t.Fatalf("B recorded %d entries, want 1: %+v", len(got), got)
+	}
+	if got[0].text != "x\ny" {
+		t.Errorf("B recorded %q, want the normalized %q (RECENT-4 dedupe)", got[0].text, "x\ny")
+	}
+	if got[0].from != "a" {
+		t.Errorf("B recorded from %q, want \"a\"", got[0].from)
+	}
+}
+
 func TestRECENT16_UnsyncedClipsNotRecorded(t *testing.T) {
 	t.Run("paused", func(t *testing.T) {
 		n := newNet()

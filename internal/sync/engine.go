@@ -201,7 +201,9 @@ func (e *Engine) HandleLocal(it clip.Item) {
 	}
 	e.opts.Network.Broadcast(sealed)
 	if !it.Sensitive {
-		e.record(text, e.opts.DeviceID, at)
+		// Record the moment this device sent, not the wire timestamp: `at` can be
+		// bumped past our own clock by the SYNC-6 rule (RECENT-10).
+		e.record(text, e.opts.DeviceID, e.opts.Now())
 	}
 	e.emit(Event{Kind: EventSent, Size: len(text)})
 }
