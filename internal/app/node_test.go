@@ -246,6 +246,14 @@ func TestRECENT1_SentClipListedOnSender(t *testing.T) {
 	eventually(t, time.Second, "B receives", func() bool { return b.clip.Text() == "hello" })
 }
 
+// The clipboard watcher is registered before Start returns, so a copy made right
+// after start is sent, not lost (SYNC-1). No sleep between Start and Copy.
+func TestSYNC1_CopyRightAfterStartIsSent(t *testing.T) {
+	a := startNode(t, discovery.NewFakeLAN(), "a", &keyAlpha)
+	a.clip.Copy("first thing", false)
+	eventually(t, 2*time.Second, "A sent the copy made right after start", listsFirst(a, "first thing", "a"))
+}
+
 func TestRECENT2_ReceivedClipListedWithSenderID(t *testing.T) {
 	lan := discovery.NewFakeLAN()
 	a := startNamedNode(t, lan, "a-device-id", "Office PC", &keyAlpha)

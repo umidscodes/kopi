@@ -75,9 +75,12 @@ func (n *memNet) add(t *testing.T, id string, opts ...devOpt) *device {
 func (d *device) run(t *testing.T) *device {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go d.engine.Run(ctx)
-	// Give Run time to register its watcher before tests copy.
-	time.Sleep(10 * time.Millisecond)
+	// Watch registers before returning, so the test can copy right away.
+	loop, err := d.engine.Watch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go loop()
 	return d
 }
 
@@ -213,6 +216,46 @@ func TestSYNC4_ReceivedClipIsNotRebroadcast(t *testing.T) {
 	}
 	if b.clip.Writes() != 1 || c.clip.Writes() != 1 {
 		t.Errorf("writes: B=%d C=%d, want exactly 1 each", b.clip.Writes(), c.clip.Writes())
+	}
+}
+
+// A peer's clip is applied on B, and B's user copies something new before B has
+// handled the echo of that Write. The engine can't tell a late echo of "one" from the
+// user copying "one" again (which must sync, SYNC-5), so it relies on the clipboard
+// reporting changes in the order they happened, as the polled OS clipboards do. The
+// fake guarantees that order (one queue per watcher); this test drives B's
+// HandleLocal by hand from the watcher, so no goroutine timing is involved.
+func TestSYNC4_LateEchoIsNotRebroadcast(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	n := newNet()
+	a := n.add(t, "a")
+	b := n.add(t, "b")
+	changes, err := b.clip.Watch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.clip.Copy("one", false)
+	a.engine.HandleLocal(clip.Item{Text: "one"}) // B applies "one": its Write echoes
+	b.clip.Copy("two", false)                    // B's user copies before the echo is handled
+
+	for i := 0; i < 2; i++ {
+		select {
+		case it := <-changes:
+			b.engine.HandleLocal(it)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("change %d never reached B's watcher", i+1)
+		}
+	}
+	if got := b.sentCount(); got != 1 {
+		t.Fatalf("B sent %d messages, want 1 (only \"two\")", got)
+	}
+	if m := lastSent(t, b); m.Text != "two" {
+		t.Fatalf("B sent %q, want %q", m.Text, "two")
+	}
+	if got := a.clip.Text(); got != "two" {
+		t.Fatalf("A's clipboard = %q, want %q", got, "two")
 	}
 }
 
