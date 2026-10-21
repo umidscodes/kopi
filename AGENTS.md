@@ -44,6 +44,9 @@ review catches something new.
   check when nothing is found.
 - Test helpers that feed events from several goroutines must wait for each step to be
   processed before the next, or the test races its own setup.
+- On macOS, fyne systray calls block on the main thread until it has run them. Never
+  hold a lock across a systray call that the main thread (`onExit`, menu callbacks) might
+  also take, or quitting deadlocks. Compute under the lock, release it, then call systray.
 - Code in `_darwin.go` / `_darwin.c` can't be compiled on Windows. Push it to a branch
   and let the macOS CI job (or the Mac over SSH) build it before merging.
 
