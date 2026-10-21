@@ -102,7 +102,16 @@ func Start(ctx context.Context, o Options) (*Node, error) {
 	n.server = srv
 	errc := make(chan error, 3)
 	go func() { errc <- srv.Serve(ctx) }()
-	go func() { errc <- eng.Run(ctx) }()
+	// Watch the clipboard before returning, so a copy made right after Start is not
+	// lost. A Watch error is reported like a Run error was: the node keeps running.
+	loop, werr := eng.Watch(ctx)
+	go func() {
+		if werr != nil {
+			errc <- werr
+			return
+		}
+		errc <- loop()
+	}()
 	go func() {
 		errc <- disc.Run(ctx, func(ev discovery.Event) {
 			if ev.Up {

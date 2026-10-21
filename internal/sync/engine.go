@@ -78,6 +78,13 @@ type Options struct {
 }
 
 // Engine syncs one device's clipboard with its peers.
+//
+// It assumes the clipboard reports changes in the order they happened, so the echo
+// of a Write arrives before any later change. The echo is recognized only as "the
+// next local change has the applied clip's text"; a late echo can't be told apart
+// from the user copying that text again (which must sync, SYNC-5) and would be sent
+// over a newer clip. The Windows and macOS clipboards poll and report only the
+// current contents, and clip.Fake keeps one ordered queue per watcher.
 type Engine struct {
 	opts  Options
 	guard *proto.ReplayGuard
@@ -136,20 +143,33 @@ func (e *Engine) Paused() bool {
 	return e.paused
 }
 
-// Run handles local clipboard changes until ctx is done.
+// Run handles local clipboard changes until ctx is done. It is Watch followed by the
+// returned loop.
 func (e *Engine) Run(ctx context.Context) error {
-	ch, err := e.opts.Clipboard.Watch(ctx)
+	loop, err := e.Watch(ctx)
 	if err != nil {
 		return err
 	}
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case it := <-ch:
-			e.HandleLocal(it)
-		}
+	return loop()
+}
+
+// Watch starts watching the clipboard now, so a change made after Watch returns is
+// never missed, and returns the loop that handles the changes until ctx is done.
+func (e *Engine) Watch(ctx context.Context) (loop func() error, err error) {
+	ch, err := e.opts.Clipboard.Watch(ctx)
+	if err != nil {
+		return nil, err
 	}
+	return func() error {
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case it := <-ch:
+				e.HandleLocal(it)
+			}
+		}
+	}, nil
 }
 
 // SetPaused stops (or resumes) syncing in both directions (TRAY-2).

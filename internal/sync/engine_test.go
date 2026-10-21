@@ -75,9 +75,12 @@ func (n *memNet) add(t *testing.T, id string, opts ...devOpt) *device {
 func (d *device) run(t *testing.T) *device {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go d.engine.Run(ctx)
-	// Give Run time to register its watcher before tests copy.
-	time.Sleep(10 * time.Millisecond)
+	// Watch registers before returning, so the test can copy right away.
+	loop, err := d.engine.Watch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go loop()
 	return d
 }
 

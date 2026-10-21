@@ -7,11 +7,24 @@ import (
 
 // Fake is an in-memory Clipboard for tests. Like a real OS clipboard, Write
 // triggers a change notification to watchers.
+//
+// Each watcher gets the changes in the order they were made, like the polled OS
+// clipboards report them: the echo of a Write never overtakes a later Copy or Write.
+// The sync engine relies on that order (SYNC-4). Neither Write nor Copy ever blocks:
+// changes go into an unbounded queue per watcher, which one goroutine per watcher
+// drains into the Watch channel.
 type Fake struct {
 	mu       sync.Mutex
 	text     string
-	watchers []chan Item
+	watchers []*watcher
 	writes   int
+}
+
+// watcher is one Watch call. queue is guarded by Fake.mu.
+type watcher struct {
+	out   chan Item
+	wake  chan struct{} // capacity 1: "the queue may be non-empty"
+	queue []Item
 }
 
 var _ Clipboard = (*Fake)(nil)
@@ -22,44 +35,76 @@ func NewFake() *Fake { return &Fake{} }
 func (f *Fake) Copy(text string, sensitive bool) {
 	f.mu.Lock()
 	f.text = text
-	ws := append([]chan Item(nil), f.watchers...)
+	f.notify(Item{Text: text, Sensitive: sensitive})
 	f.mu.Unlock()
-	for _, w := range ws {
-		w <- Item{Text: text, Sensitive: sensitive}
-	}
 }
 
+// Write never blocks: the writer (the sync engine) may hold locks while calling it.
 func (f *Fake) Write(text string) error {
 	f.mu.Lock()
 	f.text = text
 	f.writes++
-	ws := append([]chan Item(nil), f.watchers...)
+	f.notify(Item{Text: text})
 	f.mu.Unlock()
-	// Deliver asynchronously: a real OS notifies watchers later, and the writer
-	// (the sync engine) may hold locks while calling Write.
-	for _, w := range ws {
-		go func(w chan Item) { w <- Item{Text: text} }(w)
-	}
 	return nil
 }
 
+// notify queues it for every watcher. f.mu must be held, so each queue follows the
+// order in which the clipboard changed.
+func (f *Fake) notify(it Item) {
+	for _, w := range f.watchers {
+		w.queue = append(w.queue, it)
+		select {
+		case w.wake <- struct{}{}:
+		default: // already signalled
+		}
+	}
+}
+
 func (f *Fake) Watch(ctx context.Context) (<-chan Item, error) {
-	ch := make(chan Item, 64)
+	w := &watcher{out: make(chan Item), wake: make(chan struct{}, 1)}
 	f.mu.Lock()
-	f.watchers = append(f.watchers, ch)
+	f.watchers = append(f.watchers, w)
 	f.mu.Unlock()
-	go func() {
-		<-ctx.Done()
+	go f.deliver(ctx, w)
+	return w.out, nil
+}
+
+// deliver hands w's queued changes to its channel, oldest first, until ctx is done.
+// It never holds f.mu while sending, so a slow reader can't block Write.
+func (f *Fake) deliver(ctx context.Context, w *watcher) {
+	defer f.unwatch(w)
+	for {
 		f.mu.Lock()
-		for i, w := range f.watchers {
-			if w == ch {
-				f.watchers = append(f.watchers[:i], f.watchers[i+1:]...)
-				break
+		if len(w.queue) == 0 {
+			f.mu.Unlock()
+			select {
+			case <-w.wake:
+				continue
+			case <-ctx.Done():
+				return
 			}
 		}
+		it := w.queue[0]
+		w.queue = w.queue[1:]
 		f.mu.Unlock()
-	}()
-	return ch, nil
+		select {
+		case w.out <- it:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (f *Fake) unwatch(w *watcher) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, x := range f.watchers {
+		if x == w {
+			f.watchers = append(f.watchers[:i], f.watchers[i+1:]...)
+			return
+		}
+	}
 }
 
 // Text returns the current clipboard contents.
