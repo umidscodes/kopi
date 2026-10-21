@@ -178,6 +178,120 @@ func TestSYNC1_CopiedTextAppearsOnPeer(t *testing.T) {
 	eventually(t, time.Second, `B has "hello"`, hasText(b, "hello"))
 }
 
+// spyClip is a clip.Fake that keeps the channel its last Watch returned, so a test
+// can see when the watcher has closed it.
+type spyClip struct {
+	*clip.Fake
+	ch <-chan clip.Item
+}
+
+func (s *spyClip) Watch(ctx context.Context) (<-chan clip.Item, error) {
+	ch, err := s.Fake.Watch(ctx)
+	s.ch = ch
+	return ch, err
+}
+
+// waitClosed fails the test unless ch is closed within 5s. Nothing is copied while
+// it runs, so it consumes no real change.
+func waitClosed(t *testing.T, ch <-chan clip.Item) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+		case <-timeout:
+			t.Fatal("watch channel was not closed after ctx ended")
+		}
+	}
+}
+
+// Quitting Kopi cancels ctx; the clipboard watcher then closes its channel. The
+// loop must stop without handling the zero Item a closed channel yields, or it
+// broadcasts an empty clip that wipes every peer's clipboard (issue #33). A clip is
+// sent only for a real local copy (SYNC-1, SYNC-4). Both ctx.Done and the closed
+// channel are ready when the loop runs, so select picks one at random: run this with
+// -count=200.
+func TestSYNC1_ShutdownSendsNoEmptyClip(t *testing.T) {
+	n := newNet()
+	spy := &spyClip{Fake: clip.NewFake()}
+	a := n.add(t, "a", func(o *Options) { o.Clipboard = spy })
+	b := n.add(t, "b")         // the network calls B's Receive; B needs no watcher
+	b.clip.Copy("keep", false) // B's own clipboard, which an empty clip would wipe
+
+	ctx, cancel := context.WithCancel(context.Background())
+	loop, err := a.engine.Watch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	waitClosed(t, spy.ch) // now ctx.Done and the closed channel are both ready
+
+	done := make(chan error, 1)
+	go func() { done <- loop() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("loop returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop did not stop after ctx ended")
+	}
+	if got := a.sentCount(); got != 0 {
+		t.Fatalf("A sent %d messages on shutdown, want 0", got)
+	}
+	if a.hasEvent(EventSent) {
+		t.Fatalf("A emitted EventSent on shutdown")
+	}
+	if got := b.clip.Text(); got != "keep" {
+		t.Fatalf("B's clipboard = %q, want %q", got, "keep")
+	}
+}
+
+// closedClip is a clipboard whose watcher channel is already closed, as if the
+// watcher stopped on its own.
+type closedClip struct{}
+
+func (closedClip) Watch(context.Context) (<-chan clip.Item, error) {
+	ch := make(chan clip.Item)
+	close(ch)
+	return ch, nil
+}
+
+func (closedClip) Write(string) error { return nil }
+
+// A closed watcher channel ends the loop even while ctx is still alive: it never
+// yields a real change again, so handling its zero Items would only send empty clips.
+func TestSYNC1_ClosedWatchChannelStopsLoop(t *testing.T) {
+	n := newNet()
+	a := n.add(t, "a", func(o *Options) { o.Clipboard = closedClip{} })
+	n.add(t, "b")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	loop, err := a.engine.Watch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- loop() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("loop returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatalf("loop kept running on a closed watcher channel (A sent %d messages)", a.sentCount())
+	}
+	if got := a.sentCount(); got != 0 {
+		t.Fatalf("A sent %d messages from a closed watcher channel, want 0", got)
+	}
+}
+
 func TestSYNC2_BothDirections(t *testing.T) {
 	n := newNet()
 	a := n.add(t, "a").run(t)
