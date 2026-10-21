@@ -154,7 +154,8 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 // Watch starts watching the clipboard now, so a change made after Watch returns is
-// never missed, and returns the loop that handles the changes until ctx is done.
+// never missed, and returns the loop that handles the changes until ctx is done or
+// the clipboard closes the channel (the real clipboards close it when ctx ends).
 func (e *Engine) Watch(ctx context.Context) (loop func() error, err error) {
 	ch, err := e.opts.Clipboard.Watch(ctx)
 	if err != nil {
@@ -165,7 +166,12 @@ func (e *Engine) Watch(ctx context.Context) (loop func() error, err error) {
 			select {
 			case <-ctx.Done():
 				return nil
-			case it := <-ch:
+			case it, ok := <-ch:
+				if !ok {
+					// A closed channel yields zero Items, not copies: handling one
+					// would send an empty clip to every peer on quit (SYNC-1).
+					return nil
+				}
 				e.HandleLocal(it)
 			}
 		}

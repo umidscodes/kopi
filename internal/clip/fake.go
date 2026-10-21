@@ -13,6 +13,10 @@ import (
 // The sync engine relies on that order (SYNC-4). Neither Write nor Copy ever blocks:
 // changes go into an unbounded queue per watcher, which one goroutine per watcher
 // drains into the Watch channel.
+//
+// Like the real clipboards, the Watch channel is closed once ctx is done, and
+// changes not yet delivered by then are dropped. A reader must check the receive's
+// ok value: a closed channel yields zero Items forever, never a real change.
 type Fake struct {
 	mu       sync.Mutex
 	text     string
@@ -70,9 +74,12 @@ func (f *Fake) Watch(ctx context.Context) (<-chan Item, error) {
 	return w.out, nil
 }
 
-// deliver hands w's queued changes to its channel, oldest first, until ctx is done.
-// It never holds f.mu while sending, so a slow reader can't block Write.
+// deliver hands w's queued changes to its channel, oldest first, until ctx is done,
+// then closes the channel. It never holds f.mu while sending, so a slow reader can't
+// block Write. Only deliver sends on or closes w.out, so it is closed exactly once
+// and never sent on after.
 func (f *Fake) deliver(ctx context.Context, w *watcher) {
+	defer close(w.out) // runs after unwatch: Write stops queueing for w first
 	defer f.unwatch(w)
 	for {
 		f.mu.Lock()

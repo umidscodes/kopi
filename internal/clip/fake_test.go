@@ -75,3 +75,50 @@ func TestFakeWriteNeverBlocks(t *testing.T) {
 		t.Fatalf("Writes() = %d, want 1000", got)
 	}
 }
+
+// The real clipboards close their Watch channel when ctx ends (defer close(ch)).
+// Fake must do the same, or tests can't see a reader that mishandles the closed
+// channel (issue #33). Changes still queued when ctx ends may be dropped, like a
+// real watcher drops them; Write and Copy keep working and never block.
+func TestFakeClosesWatchChannelWhenCtxEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	f := NewFake()
+	ch1, _ := f.Watch(ctx)
+	ch2, _ := f.Watch(ctx)
+	f.Copy("queued 1", false) // never read before cancel
+	f.Write("queued 2")
+	cancel()
+
+	for name, ch := range map[string]<-chan Item{"watcher 1": ch1, "watcher 2": ch2} {
+		timeout := time.After(5 * time.Second)
+	drain:
+		for {
+			select {
+			case it, ok := <-ch:
+				if !ok {
+					break drain
+				}
+				if it.Text != "queued 1" && it.Text != "queued 2" {
+					t.Fatalf("%s: got %q after cancel, want a queued change or close", name, it.Text)
+				}
+			case <-timeout:
+				t.Fatalf("%s: channel not closed after ctx ended", name)
+			}
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		f.Write("after")
+		f.Copy("after", false)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Write or Copy blocked after the watchers stopped")
+	}
+	if got := f.Text(); got != "after" {
+		t.Fatalf("Text() = %q, want %q", got, "after")
+	}
+}
