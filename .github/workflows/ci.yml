@@ -19,14 +19,10 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Check formatting
-        shell: bash
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then echo "Not gofmt'd:"; echo "$unformatted"; exit 1; fi
-      - run: go vet ./...
-      - run: go build ./...
-      - run: go test ./...
-      - name: Race detector (macOS has a C toolchain)
+      - name: Check (gofmt, vet, build, test, race) - Windows
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/check.ps1
+      - name: Check (gofmt, vet, build, test, race) - macOS
         if: runner.os == 'macOS'
-        run: go test -race ./...
+        run: sh scripts/check.sh
