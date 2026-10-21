@@ -114,7 +114,16 @@ func TestOversizedFrameIsRejectedWithoutCallingHandler(t *testing.T) {
 
 	var ack [1]byte
 	if _, err := io.ReadFull(conn, ack[:]); err != nil {
-		t.Fatalf("reading ack after oversized header: %v", err)
+		// Tell "server/code is broken" apart from "something on the loopback path
+		// held our lone 4-byte segment" (issue #35): try a normal Send to the same
+		// server and report how it went.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		ctl := transport.Send(ctx, addr, []byte("control"))
+		t.Fatalf("reading ack after oversized header: %v; control Send of a normal frame to the same server: %v "+
+			"(nil: the server and loopback work for normal frames, so only the oversized-header path "+
+			"went unanswered; either serveConn's ErrTooLarge branch regressed or something on the "+
+			"loopback path held the lone 4-byte segment, see issue #35 and AGENTS.md lessons)", err, ctl)
 	}
 	if ack[0] != 2 {
 		t.Fatalf("ack = %d, want 2 (rejected)", ack[0])

@@ -47,6 +47,16 @@ review catches something new.
 - On macOS, fyne systray calls block on the main thread until it has run them. Never
   hold a lock across a systray call that the main thread (`onExit`, menu callbacks) might
   also take, or quitting deadlocks. Compute under the lock, release it, then call systray.
+- `TestOversizedFrameIsRejectedWithoutCallingHandler` failed in agent runs for weeks
+  ("i/o timeout" at the ack read, after the test's own 2s deadline; it never hung), and
+  every PR called it a "known local issue". The investigation in #35 couldn't reproduce
+  it: 20/20, 50x the whole package, 200x with GOMAXPROCS=1, and 500 raw loopback probes
+  all passed (ack within 10ms) with AVG running. Nothing in the code can block between
+  reading the 4-byte header and writing the ack. The other loopback tests passed in the
+  same failing runs, so the suspect is the agent sandbox or AVG holding a lone small
+  segment. If it comes back, don't write it off: read the test's control-Send result,
+  rerun outside the agent and with AVG's shields paused, and record which one fixes it.
+  Never skip it unconditionally.
 - Code in `_darwin.go` / `_darwin.c` can't be compiled on Windows. Push it to a branch
   and let the macOS CI job (or the Mac over SSH) build it before merging.
 
