@@ -15,13 +15,28 @@ Instructions for coding agents (omp, Claude Code) working on Kopi.
 
 ## Commands
 
+**The check** (the same command CI runs; run it before saying a task is done):
+
+- Windows: `powershell -ExecutionPolicy Bypass -File scripts/check.ps1`
+- macOS/Linux: `sh scripts/check.sh`
+
+It runs gofmt (check only), vet, build, test and race, in order, and stops at the first
+failure. `-Quick` / `--quick` skips race. It never installs anything, needs no network
+and changes no files. If there is no C toolchain it prints
+`SKIP race: no C toolchain (see AGENTS.md)` and still exits 0, so say so when you report.
+
+To get race locally on Windows, a human installs a C toolchain (for example llvm-mingw
+or MSYS2 gcc) on PATH and sets `CGO_ENABLED=1`. Agents must not install it.
+
+Individual commands, for reference:
+
 - Build: `go build ./...`
 - Test: `go test ./...`
-- Race test: `go test -race ./...` (needs CGO; skip on Windows if no C toolchain)
+- Race test: `go test -race ./...` (needs CGO and a C toolchain)
 - Vet: `go vet ./...`
-- Format: `gofmt -w .`
+- Format: `gofmt -w .` (the check uses `gofmt -l .`)
 
-Run build, vet and tests before saying a task is done, and show their output.
+Run the check before saying a task is done, and show its output.
 "Done" without that output does not count as done.
 
 ## Lessons learned
