@@ -276,16 +276,26 @@ func (a *kopiApp) markDirty() {
 
 // refresher redraws the menu whenever something changed.
 func (a *kopiApp) refresher() {
-	t := time.NewTicker(recentRefresh) // keeps the age labels fresh (RECENT-10)
-	defer t.Stop()
+	a.refreshLoop(nil, a.redraw)
+}
+
+// refreshLoop is the refresher with its tick source and redraw call injected, so a
+// test can drive the RECENT-10 refresh without waiting 60 s. ticks == nil means the
+// production 60 s timer.
+func (a *kopiApp) refreshLoop(ticks <-chan time.Time, redraw func()) {
+	if ticks == nil {
+		t := time.NewTicker(recentRefresh) // keeps the age labels fresh (RECENT-10)
+		defer t.Stop()
+		ticks = t.C
+	}
 	for {
 		select {
 		case <-a.ctx.Done():
 			return
 		case <-a.dirty:
-			a.redraw()
-		case <-t.C:
-			a.redraw()
+			redraw()
+		case <-ticks:
+			redraw()
 		}
 	}
 }

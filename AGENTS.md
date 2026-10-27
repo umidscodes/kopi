@@ -59,9 +59,11 @@ review catches something new.
   check when nothing is found.
 - Test helpers that feed events from several goroutines must wait for each step to be
   processed before the next, or the test races its own setup.
-- On macOS, fyne systray calls block on the main thread until it has run them. Never
-  hold a lock across a systray call that the main thread (`onExit`, menu callbacks) might
-  also take, or quitting deadlocks. Compute under the lock, release it, then call systray.
+- On macOS, fyne systray runs menu updates on the main thread and waits for them to
+  finish. Any lock the main thread might wait on (today: `onExit`) must never be held
+  across a systray call, or quitting deadlocks. Compute under the lock, release it, then
+  call systray. Click handlers read `ClickedCh` on their own goroutines; only tap-style
+  callbacks run on the main thread.
 - `TestOversizedFrameIsRejectedWithoutCallingHandler` failed in agent runs for weeks
   ("i/o timeout" at the ack read, after the test's own 2s deadline; it never hung), and
   every PR called it a "known local issue". The investigation in #35 couldn't reproduce

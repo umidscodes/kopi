@@ -1,8 +1,10 @@
 package main
 
 import (
+	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/umidscodes/kopi/internal/clip"
 )
@@ -51,17 +53,21 @@ func TestRECENT11_ApplyEmptyAndFilledMenu(t *testing.T) {
 	}
 }
 
-// Lock order: recentMu is a leaf lock. Clearing (which takes recentMu, a.mu and the list
-// lock, never nested) and clicking and snapshotting from several goroutines must not
-// deadlock; run with a timeout by the test runner.
+// RECENT-5 (smoke test): clicking, clearing, snapshotting and engine recording from
+// several goroutines must not deadlock. This only shows a deadlock by failing; the
+// lock rules (recentMu is a leaf lock, held only for the store, never across a call
+// into the node) are the real guard against a lock-order inversion.
 func TestRECENT5_ConcurrentClickClearSnapshotDoNotDeadlock(t *testing.T) {
+	const iterations = 50
 	a, n, _ := newMenuNode(t)
+	start := make(chan struct{}) // barrier: all four goroutines begin together
 	var wg sync.WaitGroup
 	for g := 0; g < 4; g++ {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < 50; i++ {
+			<-start
+			for i := range iterations {
 				switch g {
 				case 0:
 					n.Engine.HandleLocal(clip.Item{Text: string(rune('a' + i%26))})
@@ -75,5 +81,14 @@ func TestRECENT5_ConcurrentClickClearSnapshotDoNotDeadlock(t *testing.T) {
 			}
 		}(g)
 	}
-	wg.Wait()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	close(start)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second): // watchdog: a lock-order inversion is a named failure, not a 10-minute hang
+		buf := make([]byte, 1<<20)
+		nb := runtime.Stack(buf, true)
+		t.Fatalf("deadlock: click/clear/snapshot did not finish in 5s, goroutine dump:\n%s", buf[:nb])
+	}
 }
