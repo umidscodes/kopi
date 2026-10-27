@@ -1,8 +1,12 @@
 package main
 
 import (
+	"io"
+	"log"
+	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/umidscodes/kopi/internal/clip"
 )
@@ -51,17 +55,30 @@ func TestRECENT11_ApplyEmptyAndFilledMenu(t *testing.T) {
 	}
 }
 
-// Lock order: recentMu is a leaf lock. Clearing (which takes recentMu, a.mu and the list
-// lock, never nested) and clicking and snapshotting from several goroutines must not
-// deadlock; run with a timeout by the test runner.
+// RECENT-5 (smoke test): clicking, clearing, snapshotting and engine recording from
+// several goroutines must not deadlock. This only shows a deadlock by failing; the
+// lock rules (recentMu is a leaf lock, held only for the store, never across a call
+// into the node) are the real guard against a lock-order inversion.
 func TestRECENT5_ConcurrentClickClearSnapshotDoNotDeadlock(t *testing.T) {
+	// The loop logs ~100k clear/restore lines, which would bury the goroutine dump on
+	// failure. Registered before newMenuNode, so it's restored after the node stops.
+	// Not safe if this package's tests ever use t.Parallel().
+	prev := log.Writer()
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(prev) })
 	a, n, _ := newMenuNode(t)
+	start := make(chan struct{}) // barrier: all four goroutines begin together
+	// Shared deadline, published before the barrier opens (the channel close gives
+	// the happens-before edge): each goroutine hammers until ~300 ms after start,
+	// so the test tries many more interleavings than a fixed iteration count.
+	deadline := time.Now().Add(300 * time.Millisecond)
 	var wg sync.WaitGroup
 	for g := 0; g < 4; g++ {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < 50; i++ {
+			<-start
+			for i := 0; time.Now().Before(deadline); i++ {
 				switch g {
 				case 0:
 					n.Engine.HandleLocal(clip.Item{Text: string(rune('a' + i%26))})
@@ -75,5 +92,14 @@ func TestRECENT5_ConcurrentClickClearSnapshotDoNotDeadlock(t *testing.T) {
 			}
 		}(g)
 	}
-	wg.Wait()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	close(start)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second): // watchdog: a lock-order inversion is a named failure, not a 10-minute hang
+		buf := make([]byte, 1<<20)
+		nb := runtime.Stack(buf, true)
+		t.Fatalf("deadlock: click/clear/snapshot did not finish in 5s, goroutine dump:\n%s", buf[:nb])
+	}
 }
