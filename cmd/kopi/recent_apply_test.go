@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"log"
 	"runtime"
 	"sync"
 	"testing"
@@ -58,6 +60,12 @@ func TestRECENT11_ApplyEmptyAndFilledMenu(t *testing.T) {
 // lock rules (recentMu is a leaf lock, held only for the store, never across a call
 // into the node) are the real guard against a lock-order inversion.
 func TestRECENT5_ConcurrentClickClearSnapshotDoNotDeadlock(t *testing.T) {
+	// The loop logs ~100k clear/restore lines, which would bury the goroutine dump on
+	// failure. Registered before newMenuNode, so it's restored after the node stops.
+	// Not safe if this package's tests ever use t.Parallel().
+	prev := log.Writer()
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(prev) })
 	a, n, _ := newMenuNode(t)
 	start := make(chan struct{}) // barrier: all four goroutines begin together
 	// Shared deadline, published before the barrier opens (the channel close gives
