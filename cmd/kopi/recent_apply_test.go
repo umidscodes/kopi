@@ -58,16 +58,19 @@ func TestRECENT11_ApplyEmptyAndFilledMenu(t *testing.T) {
 // lock rules (recentMu is a leaf lock, held only for the store, never across a call
 // into the node) are the real guard against a lock-order inversion.
 func TestRECENT5_ConcurrentClickClearSnapshotDoNotDeadlock(t *testing.T) {
-	const iterations = 50
 	a, n, _ := newMenuNode(t)
 	start := make(chan struct{}) // barrier: all four goroutines begin together
+	// Shared deadline, published before the barrier opens (the channel close gives
+	// the happens-before edge): each goroutine hammers until ~300 ms after start,
+	// so the test tries many more interleavings than a fixed iteration count.
+	deadline := time.Now().Add(300 * time.Millisecond)
 	var wg sync.WaitGroup
 	for g := 0; g < 4; g++ {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
 			<-start
-			for i := range iterations {
+			for i := 0; time.Now().Before(deadline); i++ {
 				switch g {
 				case 0:
 					n.Engine.HandleLocal(clip.Item{Text: string(rune('a' + i%26))})

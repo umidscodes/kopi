@@ -50,6 +50,26 @@ func TestRECENT10_RefresherRedrawsOnTickAndDirty(t *testing.T) {
 	}
 }
 
+// RECENT-10 (shutdown): cancelling the app context must end refreshLoop; without
+// that branch the refresher goroutine leaks on quit.
+func TestRECENT10_RefresherExitsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &kopiApp{ctx: ctx, dirty: make(chan struct{}, 1)}
+	ticks := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		a.refreshLoop(ticks, func() {})
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refreshLoop did not return within 2s of context cancel; the refresher leaked")
+	}
+}
+
 // RECENT-13: both the tray dialog and a kopi.yml edit go through applyPassphrase,
 // which must empty the Recent clips list.
 func TestRECENT13_ApplyPassphraseEmptiesList(t *testing.T) {
