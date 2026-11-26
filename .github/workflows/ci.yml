@@ -41,7 +41,7 @@ jobs:
         run: |
           sh scripts/build-mac-app.sh "0.1.${GITHUB_RUN_NUMBER}"
           codesign --verify --deep --strict bin/Kopi.app
-          lipo -verify_arch arm64 bin/Kopi.app/Contents/MacOS/kopi
+          lipo bin/Kopi.app/Contents/MacOS/kopi -verify_arch arm64
           ditto -c -k --keepParent bin/Kopi.app bin/Kopi-macOS.zip
           KOPI_CLIPBOARD_TEST=1 go test ./internal/clip -run '^TestIMG1_NativeClipboard$' -v
       - name: Upload macOS app bundle
