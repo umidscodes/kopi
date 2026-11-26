@@ -285,7 +285,7 @@ func TestRECENT20_Version1FrameRejected(t *testing.T) {
 		t.Fatalf("v1 frame with same key: got %v, want ErrBadVersion", err)
 	}
 	// Any other version is rejected before decrypting, whatever the key.
-	for _, ver := range []byte{0, 1, 3, 255} {
+	for _, ver := range []byte{0, 1, 4, 255} {
 		for _, k := range []Key{keyA, keyB} {
 			if _, err := Open(keyA, sealRaw(t, k, ver, v2Plain(in, 0))); !errors.Is(err, ErrBadVersion) {
 				t.Fatalf("version %d: got %v, want ErrBadVersion", ver, err)

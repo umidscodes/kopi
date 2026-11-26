@@ -13,6 +13,7 @@ var errNoText = errors.New("clipboard has no text")
 // Item is one local clipboard change.
 type Item struct {
 	Text string
+	PNG  string // binary PNG data for image clips, mutually exclusive with Text
 	// Sensitive is true when the source app marked the content as private
 	// (password managers do this). See SPEC.md, Feature: Sensitive content.
 	Sensitive bool

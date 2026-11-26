@@ -54,7 +54,7 @@ if ($f.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 2 }
 // over a private stdout pipe, never through a file.
 func dialogPassphrase(prompt string) (string, error) {
 	script := strings.Replace(passphraseForm, "{{PROMPT}}", strings.ReplaceAll(prompt, "'", "''"), 1)
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-Command", script)
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-STA", "-Command", script)
 	// No console window, but don't set HideWindow: that would also hide the form.
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
 	out, err := cmd.Output()

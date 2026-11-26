@@ -4,6 +4,9 @@ package clip
 
 import (
 	"context"
+	"encoding/binary"
+	"github.com/umidscodes/kopi/internal/proto"
+	"image/color"
 	"runtime"
 	"time"
 	"unsafe"
@@ -46,6 +49,7 @@ const (
 var (
 	fmtExcludeFromMonitor = registerFormat("ExcludeClipboardContentFromMonitorProcessing")
 	fmtCanIncludeHistory  = registerFormat("CanIncludeInClipboardHistory")
+	fmtPNG                = registerFormat("PNG")
 	fmtViewerIgnore       = registerFormat("Clipboard Viewer Ignore") // older convention (e.g. KeePass)
 )
 
@@ -112,7 +116,7 @@ func (Windows) Write(text string) error {
 	procMoveMemory.Call(p, uintptr(unsafe.Pointer(&u16[0])), size)
 	procGlobalUnlock.Call(h)
 
-	unlock, err := open()
+	unlock, err := openForWrite()
 	if err != nil {
 		procGlobalFree.Call(h)
 		return err
@@ -137,6 +141,39 @@ func read() (Item, error) {
 		return Item{}, err
 	}
 	defer unlock()
+	if available(15) {
+		return Item{}, errNoText
+	} // CF_HDROP is a file selection
+	if available(fmtPNG) {
+		b, err := readBytes(fmtPNG, proto.MaxTextBytes+1024)
+		if err == nil {
+			// GlobalSize may include allocator padding after the PNG's final IEND chunk.
+			for pos := 8; pos+12 <= len(b); {
+				length := int64(binary.BigEndian.Uint32(b[pos:]))
+				end := int64(pos) + 12 + length
+				if end > int64(len(b)) {
+					break
+				}
+				if string(b[pos+4:pos+8]) == "IEND" && length == 0 {
+					data := string(b[:end])
+					if _, err := decodePNG(data); err == nil {
+						return Item{PNG: data, Sensitive: sensitive()}, nil
+					}
+					break
+				}
+				pos = int(end)
+			}
+		}
+	}
+	if available(8) {
+		b, err := readBytes(8, 4*maxPixels+4096)
+		if err == nil {
+			data, err := dibPNG(b)
+			if err == nil {
+				return Item{PNG: data, Sensitive: sensitive()}, nil
+			}
+		}
+	}
 	if r, _, _ := procIsClipboardFormatAvailable.Call(cfUnicodeText); r == 0 {
 		return Item{}, errNoText
 	}
@@ -200,10 +237,33 @@ func readDWORD(format uintptr) (uint32, bool) {
 // open opens the clipboard, retrying briefly because other apps hold it for short
 // moments. The OS thread stays locked until unlock: the clipboard is opened per thread.
 func open() (unlock func(), err error) {
+	return openWithOwner(0)
+}
+
+// EmptyClipboard assigns ownership to the HWND passed to OpenClipboard.
+// Use a temporary message-only window on the writing thread for immediate data.
+func openForWrite() (func(), error) {
+	runtime.LockOSThread()
+	class, _ := windows.UTF16PtrFromString("STATIC")
+	hwnd, _, err := user32.NewProc("CreateWindowExW").Call(0, uintptr(unsafe.Pointer(class)), 0, 0, 0, 0, 0, 0, ^uintptr(2), 0, 0, 0)
+	if hwnd == 0 {
+		runtime.UnlockOSThread()
+		return nil, err
+	}
+	closeOwner := func() { user32.NewProc("DestroyWindow").Call(hwnd); runtime.UnlockOSThread() }
+	unlock, err := openWithOwner(hwnd)
+	if err != nil {
+		closeOwner()
+		return nil, err
+	}
+	return func() { unlock(); closeOwner() }, nil
+}
+
+func openWithOwner(hwnd uintptr) (unlock func(), err error) {
 	runtime.LockOSThread()
 	for i := 0; i < 20; i++ {
 		var r uintptr
-		r, _, err = procOpenClipboard.Call(0)
+		r, _, err = procOpenClipboard.Call(hwnd)
 		if r != 0 {
 			return func() {
 				procCloseClipboard.Call()
@@ -214,6 +274,81 @@ func open() (unlock func(), err error) {
 	}
 	runtime.UnlockOSThread()
 	return nil, err
+}
+
+func readBytes(format uintptr, limit int) ([]byte, error) {
+	h, _, err := procGetClipboardData.Call(format)
+	if h == 0 {
+		return nil, err
+	}
+	size, _, _ := procGlobalSize.Call(h)
+	if size == 0 || size > uintptr(limit) {
+		return nil, errImage
+	}
+	p, _, err := procGlobalLock.Call(h)
+	if p == 0 {
+		return nil, err
+	}
+	defer procGlobalUnlock.Call(h)
+	b := make([]byte, int(size))
+	procMoveMemory.Call(uintptr(unsafe.Pointer(&b[0])), p, size)
+	return b, nil
+}
+
+func putBytes(format uintptr, b []byte) error {
+	h, _, err := procGlobalAlloc.Call(gmemMoveable, uintptr(len(b)))
+	if h == 0 {
+		return err
+	}
+	p, _, err := procGlobalLock.Call(h)
+	if p == 0 {
+		procGlobalFree.Call(h)
+		return err
+	}
+	procMoveMemory.Call(p, uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)))
+	procGlobalUnlock.Call(h)
+	if r, _, err := procSetClipboardData.Call(format, h); r == 0 {
+		procGlobalFree.Call(h)
+		return err
+	}
+	return nil
+}
+
+func (Windows) WritePNG(data string) error {
+	img, err := decodePNG(data)
+	if err != nil {
+		return err
+	}
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	// A top-down BI_RGB bitmap lets native editors paste a screenshot. PNG retains alpha.
+	dib := make([]byte, 40+4*w*h)
+	le := binary.LittleEndian
+	le.PutUint32(dib, 40)
+	le.PutUint32(dib[4:], uint32(w))
+	le.PutUint32(dib[8:], uint32(-h))
+	le.PutUint16(dib[12:], 1)
+	le.PutUint16(dib[14:], 32)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			c := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
+			i := 40 + 4*(y*w+x)
+			dib[i], dib[i+1], dib[i+2] = c.B, c.G, c.R
+		}
+	}
+	unlock, err := openForWrite()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if r, _, err := procEmptyClipboard.Call(); r == 0 {
+		return err
+	}
+	if err := putBytes(fmtPNG, []byte(data)); err != nil {
+		return err
+	}
+	// PNG is already on the clipboard even if the optional bitmap format fails.
+	_ = putBytes(8, dib)
+	return nil
 }
 
 func sequenceNumber() uintptr {

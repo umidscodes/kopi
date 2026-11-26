@@ -1,8 +1,8 @@
 # Kopi
 
-Copy text on one machine, paste it on another. Kopi sits in the tray on each of your
+Copy text or a screenshot on one machine, paste it on another. Kopi sits in the tray on each of your
 Windows and macOS devices, finds the others automatically (LAN or Tailscale), and keeps
-their clipboards in sync — plain text only, encrypted with a shared passphrase you set.
+their clipboards in sync — plain text and images, encrypted with a shared passphrase you set.
 It is a personal project, not a product: no installers, no code signing, no telemetry.
 
 ## How it works
@@ -17,6 +17,12 @@ It is a personal project, not a product: no installers, no code signing, no tele
 - Sensitive copies (password managers and the like) are **not** synced unless you turn
   on "Include sensitive content". Clips over 15 MB are not sent.
 - Nothing leaves your devices: no server, no accounts, no cloud.
+
+Copy a screenshot with Windows Snipping Tool or with Control–Shift–Command–4 on
+macOS, then paste into an image editor or chat on the other machine. Update both
+devices for image transfer. Kopi supports PNG, common Windows bitmaps and macOS
+TIFF pasteboard images, up to 15 MiB encoded and 16,777,216 pixels. Recent clips
+stores text only. Copying a file in Finder or Explorer is a separate operation.
 
 ## Install
 
@@ -45,12 +51,10 @@ The hash must match the corresponding line in `SHA256SUMS`.
 
 Unzip `kopi.exe` to `%LOCALAPPDATA%\Programs\Kopi\` and run it. A tray icon appears.
 
-The build is unsigned, so Windows may warn: on "Windows protected your PC" click
-**More info → Run anyway**. When the firewall prompt appears, allow Kopi for
-**private networks only**. Antivirus apps with their own firewall (e.g. AVG) may block
-inbound traffic silently and need an explicit allow rule for `kopi.exe` (and, for
-sandboxing antivirus, an exception for the `Kopi` folder). Re-add both if you later
-move the install path.
+The release executable is unsigned. SmartScreen may warn about its reputation.
+If Defender or AVG quarantines a release, record the detection name, release tag,
+and SHA-256 of the executable for vendor review. For LAN discovery and transfer,
+allow Kopi's inbound traffic on your private network.
 
 ### macOS
 
@@ -133,7 +137,7 @@ run v0.2, syncing and the Recent clips list work as normal.
 | "unreachable" | A device is announced but its port is blocked. From the other machine: `go run ./tools/kopiping <ip>:47800` — OK with a name means it's reachable. |
 | Passphrase dialog doesn't appear | Only one dialog at a time; check other windows. Or run `kopi passphrase` in a terminal. |
 | A clip didn't arrive | Sync paused? Was it marked sensitive (skipped unless the *copying* device allows it)? Over 15 MB? Is the other device's Kopi running? Right after waking from sleep Kopi retries for ~30 s. |
-| Kopi vanishes shortly after starting, or settings don't stick (Windows) | Antivirus may auto-sandbox the unsigned `kopi.exe` and then terminate it (AVG: see `C:\ProgramData\AVG\Antivirus\log\autosandbox.log`). Add the Kopi folder to the antivirus exceptions and restart Kopi. To check what Kopi really saved, open `%APPDATA%\kopi\kopi.yml` in Notepad. |
+| Kopi vanishes shortly after starting, or settings don't stick (Windows) | Antivirus may auto-sandbox the unsigned `kopi.exe` and then terminate it (AVG: see `C:\ProgramData\AVG\Antivirus\log\autosandbox.log`). Record the alert ID and submit the exact executable for vendor review. To check what Kopi really saved, open `%APPDATA%\kopi\kopi.yml` in Notepad. |
 | Tray says "running from a temporary copy" (macOS) | Run `xattr -dr com.apple.quarantine ~/Applications/Kopi.app` and reopen Kopi. |
 
 Logs: `%APPDATA%\kopi\kopi.log` (Windows), `~/Library/Application Support/kopi/kopi.log`
