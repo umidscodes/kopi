@@ -16,7 +16,7 @@ Personal project. Not a product: no installers, no code signing, no telemetry.
 
 ## Non-goals (v1)
 
-- Images, files, rich text/HTML (plain text only).
+- Files and rich text/HTML.
 - Sync over the open internet, or with devices that are neither on the LAN nor on your
   tailnet. (Tailnet devices were added in v1 after mDNS proved unreliable on a real PC:
   browsers and launchers that also listen on UDP 5353 can starve Kopi of mDNS traffic.)
@@ -186,7 +186,16 @@ Scenario: [SIZE-3] Exactly at the limit
   Then B receives it
 ```
 
-15 MB = 15 × 1024 × 1024 bytes of UTF-8 text.
+15 MB = 15 × 1024 × 1024 bytes of UTF-8 text or encoded PNG.
+
+### IMG-1 — Copy and paste an image
+
+Copying a supported raster image on either device places its pixels on the other
+device's clipboard. PNG takes precedence over bitmap and text alternatives.
+The PNG must fit the 15 MB limit and contain at most 16,777,216 pixels.
+Pause, sensitive-content filtering, encryption, ordering and echo suppression
+apply to images. Recent clips holds text only. Peers running the previous
+version can still exchange text and reject image messages.
 
 ### Feature: Tray
 
@@ -419,7 +428,7 @@ written to disk or to the log (log sizes and hashes only).
 - Search, pinning, editing or deleting single entries.
 - Showing the full clip text (e.g. as a tooltip or preview window).
 - Listing clips copied locally that did not sync.
-- Images, files or rich text (still plain text only).
+- Files or rich text.
 - Syncing between devices on different versions (v0.1 with v0.2). Every device must
   run v0.2; mixed versions show "needs update" on the v0.2 side and do not sync.
 - Changing what an already-installed v0.1 device shows or does.

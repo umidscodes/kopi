@@ -5,8 +5,8 @@
 //
 //	version (1) | nonce (24) | XChaCha20-Poly1305 ciphertext of the encoded Message
 //
-// The version byte is Version (2) and is authenticated as additional data. Open
-// rejects any other version (including v0.1's 1) with ErrBadVersion before decrypting.
+// The authenticated version byte selects text (2) or PNG (3). Older text-only
+// peers reject image frames instead of interpreting their payload as text.
 //
 // Encoded Message layout (inside the ciphertext, big endian):
 //
@@ -35,7 +35,8 @@ const (
 
 	// Version is the protocol version, the first byte of every sealed message.
 	// v0.1 used 1; version 2 adds the flags byte. The two cannot exchange messages.
-	Version = 2
+	Version      = 2
+	imageVersion = 3 // image-only frame; legacy peers reject it before decoding
 
 	flagSensitive = 1 << 0
 
@@ -72,6 +73,7 @@ type Message struct {
 	ID     [16]byte
 	From   string // sender device ID
 	SentAt time.Time
+	PNG    string
 	Text   string
 	// Sensitive marks a clip the receiver must never list (SPEC.md RECENT-19).
 	Sensitive bool
@@ -88,13 +90,21 @@ func NewID() [16]byte {
 
 // Seal encodes and encrypts m.
 func Seal(key Key, m Message) ([]byte, error) {
-	if len(m.Text) > MaxTextBytes {
+	payload := m.Text
+	version := byte(Version)
+	if m.PNG != "" {
+		if m.Text != "" {
+			return nil, ErrMalformed
+		}
+		payload, version = m.PNG, imageVersion
+	}
+	if len(payload) > MaxTextBytes {
 		return nil, ErrTooLarge
 	}
 	if len(m.From) > MaxFromBytes {
 		return nil, fmt.Errorf("%w: sender id too long", ErrMalformed)
 	}
-	plain := make([]byte, 0, headerLen+len(m.From)+len(m.Text))
+	plain := make([]byte, 0, headerLen+len(m.From)+len(payload))
 	plain = append(plain, m.ID[:]...)
 	plain = binary.BigEndian.AppendUint64(plain, uint64(m.SentAt.UnixMilli()))
 	var flags byte
@@ -103,14 +113,14 @@ func Seal(key Key, m Message) ([]byte, error) {
 	}
 	plain = append(plain, flags, byte(len(m.From)))
 	plain = append(plain, m.From...)
-	plain = append(plain, m.Text...)
+	plain = append(plain, payload...)
 
 	aead, err := chacha20poly1305.NewX(key[:])
 	if err != nil {
 		return nil, err
 	}
 	out := make([]byte, 1+aead.NonceSize(), sealedExtra+len(plain))
-	out[0] = Version
+	out[0] = version
 	if _, err := rand.Read(out[1:]); err != nil {
 		return nil, err
 	}
@@ -124,7 +134,7 @@ func Open(key Key, sealed []byte) (Message, error) {
 	if len(sealed) < sealedExtra {
 		return Message{}, ErrMalformed
 	}
-	if sealed[0] != Version {
+	if sealed[0] != Version && sealed[0] != imageVersion {
 		return Message{}, ErrBadVersion
 	}
 	aead, err := chacha20poly1305.NewX(key[:])
@@ -152,7 +162,14 @@ func Open(key Key, sealed []byte) (Message, error) {
 	if len(rest)-fromLen > MaxTextBytes {
 		return Message{}, ErrTooLarge
 	}
-	m.Text = string(rest[fromLen:])
+	if sealed[0] == imageVersion {
+		if len(rest) == fromLen {
+			return Message{}, ErrMalformed
+		}
+		m.PNG = string(rest[fromLen:])
+	} else {
+		m.Text = string(rest[fromLen:])
+	}
 	return m, nil
 }
 

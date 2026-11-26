@@ -53,6 +53,15 @@ func (f *Fake) Write(text string) error {
 	return nil
 }
 
+func (f *Fake) WritePNG(data string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.text = ""
+	f.writes++
+	f.notify(Item{PNG: data})
+	return nil
+}
+
 // notify queues it for every watcher. f.mu must be held, so each queue follows the
 // order in which the clipboard changed.
 func (f *Fake) notify(it Item) {

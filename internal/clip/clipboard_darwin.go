@@ -23,12 +23,31 @@ static long kopi_change_count(void) {
 // kopi_read returns the pasteboard text as malloc'd UTF-8 (caller frees), or NULL
 // when there is no text. *len gets the byte length; *sensitive is set to 1 when the
 // content is marked private.
-static char *kopi_read(size_t *len, int *sensitive) {
+static char *kopi_read(size_t *len, int *sensitive, int *image, size_t maxBytes, size_t maxPixels) {
 	@autoreleasepool {
 		NSPasteboard *pb = [NSPasteboard generalPasteboard];
 		NSArray<NSPasteboardType> *types = [pb types];
 		*sensitive = ([types containsObject:kopiConcealed] || [types containsObject:kopiTransient]) ? 1 : 0;
-		NSString *s = [pb stringForType:NSPasteboardTypeString];
+		if ([types containsObject:NSPasteboardTypeFileURL]) return NULL;
+        NSData *pixels = [pb dataForType:NSPasteboardTypePNG];
+        if (!pixels && [types containsObject:NSPasteboardTypeTIFF]) {
+            NSData *tiff = [pb dataForType:NSPasteboardTypeTIFF];
+            if (tiff && tiff.length <= maxPixels * 8 + 65536) {
+                NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:tiff];
+                if (rep.pixelsWide > 0 && rep.pixelsHigh > 0 && rep.pixelsWide <= maxPixels / rep.pixelsHigh)
+                    pixels = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+            }
+        }
+        if (pixels) {
+            if (pixels.length == 0 || pixels.length > maxBytes) return NULL;
+            char *buf = malloc(pixels.length);
+            if (!buf) return NULL;
+            memcpy(buf, pixels.bytes, pixels.length);
+            *len = pixels.length;
+            *image = 1;
+            return buf;
+        }
+        NSString *s = [pb stringForType:NSPasteboardTypeString];
 		if (s == nil) {
 			return NULL;
 		}
@@ -42,6 +61,15 @@ static char *kopi_read(size_t *len, int *sensitive) {
 		*len = d.length;
 		return buf;
 	}
+}
+
+static int kopi_write_png(const void *bytes, size_t len) {
+    @autoreleasepool {
+        NSData *data = [NSData dataWithBytes:bytes length:len];
+        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+        [pb clearContents];
+        return [pb setData:data forType:NSPasteboardTypePNG];
+    }
 }
 
 // kopi_write replaces the pasteboard with plain text. extraType, if not NULL, is
@@ -70,6 +98,7 @@ import "C"
 import (
 	"context"
 	"errors"
+	"github.com/umidscodes/kopi/internal/proto"
 	"time"
 	"unsafe"
 )
@@ -138,13 +167,33 @@ func write(text, extraType string) error {
 	return nil
 }
 
+func (Darwin) WritePNG(data string) error {
+	if _, err := decodePNG(data); err != nil {
+		return err
+	}
+	b := C.CBytes([]byte(data))
+	defer C.free(b)
+	if C.kopi_write_png(b, C.size_t(len(data))) == 0 {
+		return errors.New("kopi: could not write image to pasteboard")
+	}
+	return nil
+}
+
 func read() (Item, error) {
 	var n C.size_t
 	var sensitive C.int
-	p := C.kopi_read(&n, &sensitive)
+	var image C.int
+	p := C.kopi_read(&n, &sensitive, &image, proto.MaxTextBytes, maxPixels)
 	if p == nil {
 		return Item{}, errNoText
 	}
 	defer C.free(unsafe.Pointer(p))
+	if image != 0 {
+		data := C.GoStringN(p, C.int(n))
+		if _, err := decodePNG(data); err != nil {
+			return Item{}, err
+		}
+		return Item{PNG: data, Sensitive: sensitive != 0}, nil
+	}
 	return Item{Text: C.GoStringN(p, C.int(n)), Sensitive: sensitive != 0}, nil
 }

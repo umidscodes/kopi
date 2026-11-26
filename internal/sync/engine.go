@@ -97,11 +97,12 @@ type Engine struct {
 	// Hash of the last clip applied from a peer. Local changes with this hash are the
 	// echo of our own Write and must not be re-sent (SYNC-4). Cleared by any other
 	// local change, so copying that same text again later still syncs (SYNC-5).
-	appliedHash [32]byte
-	hasApplied  bool
-	lastAt      time.Time // timestamp of the newest clip seen or sent (SYNC-6)
-	lastFrom    string
-	hasLast     bool
+	appliedHash  [32]byte
+	hasApplied   bool
+	appliedImage bool
+	lastAt       time.Time // timestamp of the newest clip seen or sent (SYNC-6)
+	lastFrom     string
+	hasLast      bool
 }
 
 // New creates an Engine. Call Run to start watching the clipboard.
@@ -195,10 +196,17 @@ func (e *Engine) SetIncludeSensitive(v bool) {
 // HandleLocal processes one local clipboard change.
 func (e *Engine) HandleLocal(it clip.Item) {
 	text := normalize(it.Text)
+	size := len(text)
+	if it.PNG != "" {
+		size = len(it.PNG)
+	}
 	h := sha256.Sum256([]byte(text))
+	if it.PNG != "" {
+		h = sha256.Sum256([]byte(it.PNG))
+	}
 
 	e.mu.Lock()
-	if e.hasApplied && h == e.appliedHash {
+	if e.hasApplied && e.appliedImage == (it.PNG != "") && h == e.appliedHash {
 		// Echo of a clip we just applied from a peer.
 		e.mu.Unlock()
 		return
@@ -216,19 +224,19 @@ func (e *Engine) HandleLocal(it clip.Item) {
 		e.mu.Unlock()
 		e.emit(Event{Kind: EventSkippedSensitive})
 		return
-	case len(text) > proto.MaxTextBytes:
+	case size > proto.MaxTextBytes:
 		e.mu.Unlock()
-		e.emit(Event{Kind: EventTooLarge, Size: len(text)})
+		e.emit(Event{Kind: EventTooLarge, Size: size})
 		return
 	}
-	m := proto.Message{ID: proto.NewID(), From: e.opts.DeviceID, SentAt: e.nextSentAt(), Text: text, Sensitive: it.Sensitive}
+	m := proto.Message{ID: proto.NewID(), From: e.opts.DeviceID, SentAt: e.nextSentAt(), Text: text, PNG: it.PNG, Sensitive: it.Sensitive}
 	e.lastAt, e.lastFrom, e.hasLast = m.SentAt, m.From, true
 	sealed, err := proto.Seal(*e.key, m)
 	if err != nil {
 		e.mu.Unlock()
 		return
 	}
-	if !it.Sensitive {
+	if !it.Sensitive && it.PNG == "" {
 		// Record the moment this device sent, not the wire timestamp: `at` can be
 		// bumped past our own clock by the SYNC-6 rule (RECENT-10). Record under e.mu,
 		// like Receive, so the list order follows the SYNC-6 order of the clipboard.
@@ -237,7 +245,7 @@ func (e *Engine) HandleLocal(it clip.Item) {
 	e.mu.Unlock()
 
 	e.opts.Network.Broadcast(sealed)
-	e.emit(Event{Kind: EventSent, Size: len(text)})
+	e.emit(Event{Kind: EventSent, Size: size})
 }
 
 // nextSentAt returns the timestamp for a clip this device sends now. Timestamps are
@@ -266,12 +274,13 @@ func (e *Engine) Restore(text string) error {
 	e.mu.Lock()
 	// Mark the Write's echo like an applied clip (SYNC-4); the next other local change
 	// clears it, so copying this text again later still syncs (SYNC-5).
-	prevHash, prevHas := e.appliedHash, e.hasApplied
+	prevHash, prevHas, prevImage := e.appliedHash, e.hasApplied, e.appliedImage
+	e.appliedImage = false
 	e.appliedHash = sha256.Sum256([]byte(text))
 	e.hasApplied = true
 	if err := e.opts.Clipboard.Write(write); err != nil {
 		// Nothing was written, so there is no echo to suppress.
-		e.appliedHash, e.hasApplied = prevHash, prevHas
+		e.appliedHash, e.hasApplied, e.appliedImage = prevHash, prevHas, prevImage
 		e.mu.Unlock()
 		return err
 	}
@@ -358,20 +367,33 @@ func (e *Engine) apply(m proto.Message, gen uint64) error {
 		return nil // an older clip lost to a newer one (SYNC-6)
 	}
 	text := normalize(m.Text)
-	e.appliedHash = sha256.Sum256([]byte(text))
-	e.hasApplied = true
-	e.lastAt, e.lastFrom, e.hasLast = m.SentAt, m.From, true
 	write := text
 	if e.opts.LineEnding != "\n" {
 		write = strings.ReplaceAll(text, "\n", e.opts.LineEnding)
 	}
-	if err := e.opts.Clipboard.Write(write); err != nil {
-		return err
+	size := len(text)
+	if m.PNG != "" {
+		writer, ok := e.opts.Clipboard.(interface{ WritePNG(string) error })
+		if !ok {
+			return errors.New("clipboard does not support images")
+		}
+		if err := writer.WritePNG(m.PNG); err != nil {
+			return err
+		}
+		e.appliedHash = sha256.Sum256([]byte(m.PNG))
+		size = len(m.PNG)
+	} else {
+		if err := e.opts.Clipboard.Write(write); err != nil {
+			return err
+		}
+		e.appliedHash = sha256.Sum256([]byte(text))
 	}
-	if !m.Sensitive {
+	e.hasApplied, e.appliedImage = true, m.PNG != ""
+	e.lastAt, e.lastFrom, e.hasLast = m.SentAt, m.From, true
+	if !m.Sensitive && m.PNG == "" {
 		e.record(text, m.From, e.opts.Now())
 	}
-	e.emit(Event{Kind: EventApplied, Size: len(text)})
+	e.emit(Event{Kind: EventApplied, Size: size})
 	return nil
 }
 

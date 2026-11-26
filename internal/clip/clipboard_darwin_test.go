@@ -22,7 +22,11 @@ func realClipboard(t *testing.T) Darwin {
 	saved, err := read()
 	t.Cleanup(func() {
 		if err == nil {
-			Darwin{}.Write(saved.Text)
+			if saved.PNG != "" {
+				Darwin{}.WritePNG(saved.PNG)
+			} else {
+				Darwin{}.Write(saved.Text)
+			}
 		}
 	})
 	return Darwin{}

@@ -25,7 +25,11 @@ func realClipboard(t *testing.T) Windows {
 	saved, err := read()
 	t.Cleanup(func() {
 		if err == nil {
-			Windows{}.Write(saved.Text)
+			if saved.PNG != "" {
+				Windows{}.WritePNG(saved.PNG)
+			} else {
+				Windows{}.Write(saved.Text)
+			}
 		}
 	})
 	return Windows{}
